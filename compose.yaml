@@ -87,6 +87,7 @@ services:
       PERUDEVS_API_KEY: ${PERUDEVS_API_KEY:-}
       PERUDEVS_BASE_URL: ${PERUDEVS_BASE_URL:-https://api.perudevs.com/api/v1/dni/complete}
       CLINICIAN_MFA_REQUIRED: ${CLINICIAN_MFA_REQUIRED:-false}
+      ADMIN_MFA_REQUIRED: ${ADMIN_MFA_REQUIRED:-false}
       RESET_BOOTSTRAP_ADMIN_PASSWORD: ${RESET_BOOTSTRAP_ADMIN_PASSWORD:-false}
     depends_on:
       postgres:

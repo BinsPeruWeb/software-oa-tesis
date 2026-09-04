@@ -51,8 +51,8 @@ export class AdminController {
     const normalizedEmail = email(body.email, true)!;
     const displayName = text(body.displayName, 'Nombre visible', 2, 100);
     if (!['CLINICIAN', 'ADMIN'].includes(body.role ?? '')) throw new BadRequestException('Rol inválido');
-    if (passwordRequired && (!body.password || body.password.length < 14 || body.password.length > 128)) throw new BadRequestException('La contraseña debe tener entre 14 y 128 caracteres');
-    if (body.password && (body.password.length < 14 || body.password.length > 128)) throw new BadRequestException('La contraseña debe tener entre 14 y 128 caracteres');
+    if (passwordRequired && (!body.password || body.password.length < 8 || body.password.length > 128)) throw new BadRequestException('La contraseña debe tener entre 8 y 128 caracteres');
+    if (body.password && (body.password.length < 8 || body.password.length > 128)) throw new BadRequestException('La contraseña debe tener entre 8 y 128 caracteres');
     return { email: normalizedEmail, displayName, role: body.role!, password: body.password,
       professionalLicense: optionalText(body.professionalLicense, 'Colegiatura', 30), specialty: optionalText(body.specialty, 'Especialidad', 80) };
   }

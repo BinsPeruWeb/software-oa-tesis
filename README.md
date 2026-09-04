@@ -86,8 +86,9 @@ institución autorice expresamente a ambos proveedores y el flujo de datos.
 
 No es necesario instalar Node, Python, crear una `venv` ni instalar PostgreSQL
 en la laptop: esas versiones y dependencias se ejecutan dentro de los
-contenedores. Las credenciales iniciales están en `.env`; en el primer acceso la
-interfaz pedirá enrolar MFA con una aplicación autenticadora TOTP.
+contenedores. Las credenciales iniciales están en `.env`. Con la configuración
+local actual el acceso usa solo correo y contraseña; al reactivar MFA, la
+interfaz solicitará el código TOTP o el enrolamiento correspondiente.
 
 Para detener o volver a iniciar el entorno sin perder los datos locales:
 
@@ -114,8 +115,9 @@ SMOKE_CLINICIAN_EMAIL=medico-pruebas@example.invalid
 SMOKE_CLINICIAN_PASSWORD=una-contraseña-de-pruebas
 ```
 
-En local, el MFA es obligatorio para administradores y está temporalmente
-deshabilitado para médicos mediante `CLINICIAN_MFA_REQUIRED=false`.
+En local, el MFA está temporalmente deshabilitado para ambos roles mediante
+`ADMIN_MFA_REQUIRED=false` y `CLINICIAN_MFA_REQUIRED=false`. Los secretos TOTP
+existentes se conservan para poder reactivarlo posteriormente.
 
 Para las pruebas Python con los modelos reales se usa el objetivo Docker `test`; consulte
 `docs/VERIFICATION.md` para los comandos y los resultados registrados.

@@ -146,9 +146,12 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Credenciales inválidas');
     }
     await this.db.query('UPDATE users SET failed_attempts=0,locked_until=NULL WHERE id=$1', [user.id]);
-    if (user.role_code === 'CLINICIAN' && process.env.CLINICIAN_MFA_REQUIRED !== 'true') {
+    const mfaRequired = user.role_code === 'ADMIN'
+      ? process.env.ADMIN_MFA_REQUIRED === 'true'
+      : process.env.CLINICIAN_MFA_REQUIRED === 'true';
+    if (!mfaRequired) {
       const session = await this.issueSession(user);
-      await this.audit.record(user.id, 'AUTH_CLINICIAN_OK', 'Session', session.sessionId, { mfa: false });
+      await this.audit.record(user.id, 'AUTH_PASSWORD_OK', 'Session', session.sessionId, { mfa: false, role: user.role_code });
       return { authenticated: true as const, ...session };
     }
     let credential = (await this.db.query<{ secret_cipher: Buffer; enabled: boolean }>('SELECT * FROM mfa_credentials WHERE user_id=$1', [user.id])).rows[0];

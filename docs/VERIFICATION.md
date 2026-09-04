@@ -98,3 +98,15 @@ deshabilita el MFA del administrador.
 - Tiempo radiológico observado en la prueba sintética: 0.24 s.
 - La LSTM integra tanto antecedentes externos como episodios anteriores de la
   misma rodilla, siempre con fecha estrictamente anterior.
+
+## Autenticación local temporal — 2026-09-04
+
+- MFA deshabilitado temporalmente para administradores y médicos mediante
+  `ADMIN_MFA_REQUIRED=false` y `CLINICIAN_MFA_REQUIRED=false`.
+- Los secretos TOTP existentes no se eliminan, por lo que MFA puede reactivarse
+  cambiando las variables de entorno a `true`.
+- Inicio de sesión administrativo con contraseña y sin desafío MFA: aprobado.
+- Creación de una cuenta con contraseña de exactamente 8 caracteres: aprobada.
+- Creación de una cuenta con contraseña de 7 caracteres: rechazada con HTTP 400.
+- Estado final de prueba: solo permanece el administrador base; no quedan
+  sesiones, eventos de auditoría ni registros clínicos de la validación.
