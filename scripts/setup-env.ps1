@@ -3,7 +3,12 @@ $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $target = Join-Path $root '.env'
 if (Test-Path -LiteralPath $target) { throw '.env ya existe; no fue sobrescrito' }
 $example = Get-Content -Raw -LiteralPath (Join-Path $root '.env.example')
-function Random-Base64([int]$Bytes) { [Convert]::ToBase64String([Security.Cryptography.RandomNumberGenerator]::GetBytes($Bytes)) }
+function Random-Base64([int]$Bytes) {
+  $buffer = New-Object byte[] $Bytes
+  $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+  try { $generator.GetBytes($buffer) } finally { $generator.Dispose() }
+  [Convert]::ToBase64String($buffer)
+}
 $content = $example.Replace('replace-with-at-least-32-random-characters', (Random-Base64 48))
 $content = $content.Replace('replace-with-another-random-value', (Random-Base64 48))
 $content = $content.Replace('replace-with-field-base64-32-byte-key', (Random-Base64 32))
