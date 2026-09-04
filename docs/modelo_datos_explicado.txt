@@ -718,6 +718,7 @@ Para qué se usa:
 --------------------------
 
 - Modelo visual para dbdiagram.io: docs/database.dbml
+- Script completo para SQL Server: docs/software_oa_sql_server.sql
 - Migraciones reales: apps/api/migrations/
 - Contratos de modelos: docs/MODEL_CONTRACTS.md
 - Contexto del Product Backlog: context_product_backlog.md

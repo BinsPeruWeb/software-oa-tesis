@@ -237,6 +237,8 @@ docker compose --profile gpu up --build -d
 
 - [`docs/database.dbml`](docs/database.dbml): esquema listo para pegar o
   importar en dbdiagram.io.
+- [`docs/software_oa_sql_server.sql`](docs/software_oa_sql_server.sql): creación
+  completa del modelo equivalente para Microsoft SQL Server 2019/2022.
 - [`docs/modelo_datos_explicado.txt`](docs/modelo_datos_explicado.txt):
   explicación breve y sencilla de las tablas y sus relaciones.
 - [`context_product_backlog.md`](context_product_backlog.md): contexto funcional
