@@ -1,0 +1,260 @@
+MODELO DE DATOS — PLATAFORMA OA
+================================
+
+1. IDEA GENERAL
+---------------
+
+La base de datos organiza la información siguiendo este recorrido:
+
+Usuario médico
+  -> Paciente
+     -> Episodio clínico
+        -> Radiografía
+           -> Rodilla analizada
+              -> Predicción y Grad-CAM
+                 -> Revisión médica
+                    -> Reporte PDF
+
+También guarda las sesiones, antecedentes, datos clínicos, configuraciones y
+eventos de auditoría del sistema.
+
+
+2. USUARIOS Y ACCESO
+--------------------
+
+roles
+  Define los dos tipos de usuario disponibles:
+  - ADMIN: administrador técnico.
+  - CLINICIAN: médico.
+
+users
+  Guarda las cuentas de acceso: nombre, correo, contraseña cifrada mediante
+  hash, rol, estado, colegiatura y especialidad.
+
+mfa_credentials
+  Guarda la configuración de autenticación en dos pasos de cada usuario.
+
+sessions
+  Representa las sesiones iniciadas. Permite conocer cuándo vencen o fueron
+  cerradas.
+
+Relación principal:
+  Un rol puede pertenecer a muchos usuarios.
+  Un usuario puede tener una configuración MFA y varias sesiones.
+
+
+3. PACIENTES E HISTORIA CLÍNICA
+-------------------------------
+
+patients
+  Contiene la identidad principal del paciente: historia clínica, DNI,
+  nombres, apellidos, nacimiento y sexo.
+
+  Cada paciente pertenece a un único médico responsable. Los datos sensibles
+  se almacenan cifrados. El DNI y la historia clínica también tienen un índice
+  HMAC que permite buscarlos sin guardarlos como texto visible.
+
+patient_contacts
+  Guarda el teléfono y correo del paciente, ambos relacionados directamente
+  con su ficha.
+
+patient_clinical_profiles
+  Guarda el estado clínico actual:
+  - dolor de 0 a 10;
+  - obesidad;
+  - diabetes;
+  - hipertensión;
+  - consumo de nicotina;
+  - trauma de miembro inferior.
+
+prior_exams
+  Guarda exámenes antiguos que no fueron realizados dentro del sistema.
+  Incluye fecha, rodilla, KL confirmado y datos clínicos históricos. Estos
+  antecedentes se utilizan para los análisis longitudinales.
+
+Relación principal:
+  Un médico puede registrar muchos pacientes.
+  Un paciente tiene un contacto, un perfil clínico y varios antecedentes.
+
+
+4. EPISODIOS Y RADIOGRAFÍAS
+---------------------------
+
+clinical_episodes
+  Agrupa todo lo realizado en una fecha de atención o análisis. Un paciente
+  puede tener varios episodios a lo largo del tiempo.
+
+stored_assets
+  Registra la ubicación de los archivos cifrados:
+  - radiografías;
+  - imágenes Grad-CAM;
+  - reportes PDF.
+
+  La tabla no contiene directamente el archivo. Guarda su ruta interna, tipo,
+  tamaño y hash para comprobar su integridad.
+
+image_preflight_reviews
+  Guarda el resultado de la revisión visual previa realizada antes de aceptar
+  una imagen. Indica si corresponde a una radiografía de rodilla y si parece
+  bilateral o de una sola rodilla.
+
+radiographic_studies
+  Representa la radiografía cargada. Guarda la fecha, formato detectado,
+  opciones de orientación, archivo asociado y revisión visual previa.
+
+knee_observations
+  Indica qué rodilla de la radiografía será analizada:
+  - L: izquierda.
+  - R: derecha.
+
+Relación principal:
+  Un paciente puede tener muchos episodios.
+  Un episodio puede contener uno o más estudios.
+  Cada estudio apunta a una radiografía cifrada y genera una observación de
+  rodilla.
+
+
+5. PROCESAMIENTO Y MODELOS DE INTELIGENCIA ARTIFICIAL
+-----------------------------------------------------
+
+inference_jobs
+  Funciona como una cola de trabajos. Guarda qué análisis debe ejecutarse y su
+  estado:
+  - QUEUED: en espera.
+  - RUNNING: ejecutándose.
+  - SUCCEEDED: terminado correctamente.
+  - FAILED: no pudo terminar.
+
+  La clave de idempotencia evita crear el mismo trabajo más de una vez.
+
+model_predictions
+  Guarda los resultados producidos por los modelos:
+  - modelo y versión;
+  - probabilidades;
+  - KL estimado;
+  - riesgo calculado;
+  - umbral usado;
+  - hashes de los modelos y de la entrada;
+  - dispositivo y tiempo de procesamiento.
+
+  Esta tabla puede almacenar resultados del ensemble CNN, XGBoost o LSTM.
+
+gradcam_explanations
+  Relaciona una predicción con los mapas Grad-CAM de ResNet50 y DenseNet121.
+  Cada mapa se guarda como un archivo cifrado.
+
+clinical_observations
+  Conserva una copia de los datos clínicos que tenía el paciente al momento
+  exacto del estudio. Así, si su perfil cambia después, el análisis original
+  continúa teniendo su contexto histórico.
+
+Relación principal:
+  Una observación de rodilla puede generar varios trabajos.
+  Cada trabajo terminado puede producir una predicción.
+  Una predicción KL puede tener dos mapas Grad-CAM.
+
+
+6. REVISIÓN MÉDICA Y REPORTES
+-----------------------------
+
+clinician_reviews
+  Guarda la decisión del médico sobre una predicción KL:
+  - CONFIRMED: confirmó el resultado.
+  - CORRECTED: cambió el grado KL.
+  - REJECTED: rechazó la predicción.
+
+  También registra quién revisó y cuándo lo hizo. La predicción original no se
+  modifica, por lo que se mantiene la trazabilidad.
+
+draft_reports
+  Registra los PDF generados. Hay dos tipos:
+  - EPISODE: contiene un episodio específico.
+  - LONGITUDINAL: reúne la evolución del paciente.
+
+  El PDF real está cifrado y referenciado mediante stored_assets.
+
+Relación principal:
+  Una predicción puede recibir revisiones médicas.
+  Un episodio puede generar varios reportes en fechas diferentes.
+
+
+7. CONFIGURACIÓN Y AUDITORÍA
+----------------------------
+
+app_settings
+  Guarda configuraciones generales, como el nombre de la institución, el
+  subtítulo del reporte y el prefijo de historia clínica.
+
+audit_events
+  Registra acciones importantes: inicios de sesión, cambios, análisis,
+  revisiones y descargas. Incluye actor, acción, entidad, fecha y datos de
+  contexto.
+
+  Es una tabla de solo agregado: PostgreSQL impide editar o eliminar sus
+  registros.
+
+schema_migrations
+  Lleva el control de las migraciones SQL que ya fueron aplicadas para no
+  ejecutarlas nuevamente.
+
+
+8. EJEMPLO RÁPIDO
+-----------------
+
+1. Un médico se encuentra registrado en users.
+2. El médico crea un paciente en patients.
+3. Sus datos de contacto van a patient_contacts y sus datos médicos a
+   patient_clinical_profiles.
+4. Al cargar una radiografía se crea un clinical_episode.
+5. El archivo cifrado se registra en stored_assets.
+6. La revisión previa se guarda en image_preflight_reviews.
+7. La radiografía se registra en radiographic_studies.
+8. La rodilla seleccionada se registra en knee_observations.
+9. El análisis automático se controla mediante inference_jobs.
+10. Los resultados se guardan en model_predictions.
+11. Los mapas explicativos se registran en gradcam_explanations.
+12. La confirmación o corrección médica se guarda en clinician_reviews.
+13. El PDF se registra en draft_reports y su archivo en stored_assets.
+14. Las acciones importantes quedan registradas en audit_events.
+
+
+9. RESUMEN DE RELACIONES
+------------------------
+
+ADMIN/MÉDICO (users)
+  -> crea o administra PACIENTES (patients)
+
+PACIENTE
+  -> tiene CONTACTO (patient_contacts)
+  -> tiene PERFIL CLÍNICO (patient_clinical_profiles)
+  -> tiene ANTECEDENTES (prior_exams)
+  -> tiene EPISODIOS (clinical_episodes)
+
+EPISODIO
+  -> contiene RADIOGRAFÍAS (radiographic_studies)
+  -> genera REPORTES (draft_reports)
+
+RADIOGRAFÍA
+  -> utiliza un ARCHIVO CIFRADO (stored_assets)
+  -> puede tener REVISIÓN VISUAL PREVIA (image_preflight_reviews)
+  -> produce una OBSERVACIÓN DE RODILLA (knee_observations)
+
+OBSERVACIÓN DE RODILLA
+  -> conserva DATOS CLÍNICOS DEL MOMENTO (clinical_observations)
+  -> genera TRABAJOS DE INFERENCIA (inference_jobs)
+  -> genera PREDICCIONES (model_predictions)
+
+PREDICCIÓN
+  -> puede tener GRAD-CAM (gradcam_explanations)
+  -> puede tener REVISIÓN MÉDICA (clinician_reviews)
+
+Todo el recorrido relevante queda registrado en AUDITORÍA (audit_events).
+
+
+10. ARCHIVOS DE REFERENCIA
+--------------------------
+
+- Modelo visual para dbdiagram.io: docs/database.dbml
+- Migraciones reales: apps/api/migrations/
+- Contratos de modelos: docs/MODEL_CONTRACTS.md
+- Contexto del Product Backlog: context_product_backlog.md
