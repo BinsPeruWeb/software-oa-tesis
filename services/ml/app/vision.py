@@ -34,6 +34,20 @@ class VisionResult:
     unavailable_reason: str | None
 
 
+def classify_review_status(assessment: VisionAssessment | None) -> str:
+    if assessment is None:
+        return "UNAVAILABLE"
+    if not assessment.is_radiograph or assessment.anatomy == "other":
+        return "REJECTED"
+    confidently_valid = (
+        assessment.confidence >= 0.70
+        and assessment.anatomy == "knee"
+        and assessment.view == "frontal_ap"
+        and assessment.quality != "unusable"
+    )
+    return "ACCEPTED" if confidently_valid else "REVIEW_REQUIRED"
+
+
 SCHEMA = {
     "type": "object",
     "properties": {

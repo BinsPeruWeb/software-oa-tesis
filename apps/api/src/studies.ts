@@ -282,6 +282,10 @@ export class StudiesController {
     if (preflight.input_hash !== createHash('sha256').update(image.buffer).digest('hex')) {
       throw new BadRequestException('El archivo cambió después de su verificación');
     }
+    if (preflight.review_status === 'REJECTED') {
+      throw new BadRequestException('Estudio bloqueado: la imagen no es una radiografía de rodilla');
+    }
+    if (!preflight.supported) throw new BadRequestException('La disposición detectada no es compatible con este formato');
     if (!['bilateral', 'single'].includes(body.imageLayout)) throw new BadRequestException('Indique si la imagen contiene una o ambas rodillas');
     if (preflight.file_kind === 'DICOM' && body.imageLayout === 'single') {
       throw new BadRequestException('Actualmente el DICOM debe contener ambas rodillas');
@@ -294,10 +298,6 @@ export class StudiesController {
     const examDate = isoDate(body.examDate, 'Fecha del examen');
     if (!asBool(body.acquisitionConfirmed, 'radiografía frontal con apoyo de peso')) {
       throw new BadRequestException('Debe confirmar que la radiografía es frontal y fue tomada con apoyo de peso');
-    }
-    const overrideReason = optionalText(body.manualOverrideReason, 'Motivo de revisión manual', 500);
-    if (preflight.review_status === 'REJECTED' && (!overrideReason || overrideReason.length < 20)) {
-      throw new BadRequestException('La revisión automática rechazó el archivo; se requiere un motivo clínico de al menos 20 caracteres');
     }
     const episode = (await this.db.query<{ patient_id: string }>(
       `SELECT e.patient_id FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
@@ -339,7 +339,7 @@ export class StudiesController {
       return { studyId: study.rows[0].id, observationId: observation.rows[0].id, jobId: job.rows[0].id };
     });
     await this.audit.record(user.id, 'STUDY_UPLOADED', 'RadiographicStudy', ids.studyId, {
-      sourceType, kneeSide: body.kneeSide, preflightStatus: preflight.review_status, manualOverride: Boolean(overrideReason),
+      sourceType, kneeSide: body.kneeSide, preflightStatus: preflight.review_status,
     });
     await this.audit.record(user.id, 'INFERENCE_QUEUED', 'InferenceJob', ids.jobId, { automatic: true });
     return ids;

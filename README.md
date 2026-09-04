@@ -76,10 +76,21 @@ OPENROUTER_API_KEY=...
 ```
 
 El navegador nunca recibe esas claves. La revisión visual envía solamente una
-miniatura PNG reducida, sin etiquetas DICOM y con sus bordes enmascarados; no
+miniatura PNG reducida, sin metadatos DICOM y con sus bordes enmascarados; no
 envía el archivo DICOM original. Se solicita una ruta sin retención ni
-recolección de datos. El resultado solo filtra y sugiere formato/orientación:
-no estima KL, no diagnostica y siempre puede requerir revisión humana.
+recolección de datos. Si el modelo determina que no es una radiografía o que no
+muestra una rodilla, el servidor bloquea la creación del estudio sin permitir
+una excepción manual. Los resultados inciertos sí requieren revisión humana.
+Esta revisión no estima KL ni diagnostica.
+
+Un DICOM puede contener identidad, nacimiento, sexo y otros datos del paciente.
+La aplicación no importa esos campos a la historia clínica: actualmente solo
+lee la fecha del estudio, cuando está disponible, y usa la ficha registrada
+como fuente de identidad. PNG/JPG no incorpora metadatos clínicos normalizados
+y usa el mismo formulario de estudio. La eliminación de metadatos no puede
+garantizar que no exista texto identificable grabado dentro de los píxeles; por
+eso las imágenes clínicas requieren el procedimiento institucional de
+desidentificación antes de utilizar servicios externos.
 
 No use esos servicios con información clínica identificable hasta que la
 institución autorice expresamente a ambos proveedores y el flujo de datos.

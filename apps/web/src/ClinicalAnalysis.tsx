@@ -11,23 +11,24 @@ type Preflight = {
   assessment: null | { view: string; coverage: string; laterality: string; weight_bearing: string; quality: string; confidence: number };
 };
 type AnalysisIds = { episodeId: string; studyId: string; observationId: string; jobId: string; kneeSide: string };
-const percent = (value: number) => `${(value * 100).toFixed(1)} %`;
+const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
 function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: (ids: AnalysisIds) => void; notify: Notify }) {
   const [file, setFile] = useState<File>(); const [side, setSide] = useState('R'); const [layout, setLayout] = useState<'bilateral' | 'single' | ''>('');
   const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10)); const [confirmed, setConfirmed] = useState(false);
-  const [advanced, setAdvanced] = useState({ invert: false, swap: false }); const [overrideReason, setOverrideReason] = useState('');
+  const [advanced, setAdvanced] = useState({ invert: false, swap: false });
   const [preflight, setPreflight] = useState<Preflight>(); const [checking, setChecking] = useState(false); const [busy, setBusy] = useState(false);
+  const blocked = preflight?.reviewStatus === 'REJECTED' || preflight?.supported === false;
 
   async function chooseFile(selected?: File) {
-    setFile(selected); setPreflight(undefined); setLayout(''); setOverrideReason(''); if (!selected) return; setChecking(true);
+    setFile(selected); setPreflight(undefined); setLayout(''); if (!selected) return; setChecking(true);
     try {
       const data = new FormData(); data.append('image', selected);
       const result = await api<Preflight>('/api/studies/preflight', { method: 'POST', body: data }); setPreflight(result);
       if (result.examDate) setExamDate(result.examDate);
       if (result.fileKind === 'DICOM') setLayout('bilateral'); else if (result.suggestedLayout !== 'uncertain') setLayout(result.suggestedLayout);
       if (result.assessment?.laterality === 'left') setSide('L'); else if (result.assessment?.laterality === 'right') setSide('R');
-      notify(result.reviewStatus === 'ACCEPTED' ? 'Radiografía reconocida correctamente' : 'Revise la sugerencia automática antes de continuar', result.reviewStatus === 'ACCEPTED' ? 'success' : 'warning');
+      notify(result.reviewStatus === 'ACCEPTED' ? 'Radiografía reconocida correctamente' : result.reviewStatus === 'REJECTED' ? 'Archivo rechazado: no corresponde a una radiografía de rodilla' : 'Revise la sugerencia automática antes de continuar', result.reviewStatus === 'ACCEPTED' ? 'success' : result.reviewStatus === 'REJECTED' ? 'error' : 'warning');
     } catch (error: any) { notify(error.message, 'error'); } finally { setChecking(false); }
   }
 
@@ -37,7 +38,7 @@ function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: 
       const episode = await post<{ id: string }>(`/api/patients/${patient.id}/episodes`, { openedAt: examDate });
       const data = new FormData(); data.append('image', file); data.append('examDate', examDate); data.append('preflightId', preflight.preflightId);
       data.append('imageLayout', layout); data.append('kneeSide', side); data.append('acquisitionConfirmed', String(confirmed));
-      data.append('invertPolarity', String(advanced.invert)); data.append('swapSides', String(advanced.swap)); if (overrideReason) data.append('manualOverrideReason', overrideReason);
+      data.append('invertPolarity', String(advanced.invert)); data.append('swapSides', String(advanced.swap));
       const study = await api<{ studyId: string; observationId: string; jobId: string }>(`/api/episodes/${episode.id}/studies`, { method: 'POST', body: data });
       notify('Estudio guardado. El análisis comenzó automáticamente.', 'success');
       onReady({ episodeId: episode.id, studyId: study.studyId, observationId: study.observationId, jobId: study.jobId, kneeSide: side });
@@ -50,15 +51,14 @@ function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: 
       <label className="span upload-zone"><input type="file" accept=".dcm,application/dicom,image/png,image/jpeg" onChange={(event) => void chooseFile(event.target.files?.[0])} required /><b>{file ? file.name : 'Seleccione o arrastre un archivo'}</b><small>DICOM, PNG o JPG · máximo 64 MB</small></label>
       {checking && <div className="analysis-loading span"><i /> Verificando formato y contenido…</div>}
       {preflight && <div className="preflight span"><img src={preflight.previewDataUrl} alt="Vista previa del estudio" /><div><Badge tone={preflight.reviewStatus === 'ACCEPTED' ? 'success' : preflight.reviewStatus === 'REJECTED' ? 'danger' : 'warning'}>{preflight.reviewStatus === 'ACCEPTED' ? 'Compatible' : preflight.reviewStatus === 'REJECTED' ? 'No reconocida' : 'Revisar'}</Badge><h3>{preflight.reviewStatus === 'ACCEPTED' ? 'Radiografía frontal reconocida' : preflight.reviewStatus === 'REJECTED' ? 'La imagen no parece una radiografía válida' : 'Confirme los datos sugeridos'}</h3><p>{preflight.fileKind === 'DICOM' ? 'DICOM detectado' : 'PNG/JPG detectado'} · revisión visual automática</p><small>La miniatura externa no contiene metadatos DICOM y tiene sus bordes enmascarados.</small></div></div>}
-      {preflight && <>
+      {preflight && !blocked && <>
         <label>Fecha del examen<input type="date" max={new Date().toISOString().slice(0, 10)} value={examDate} onChange={(event) => setExamDate(event.target.value)} required /></label>
         <fieldset><legend>Contenido detectado</legend><div className="segment"><button type="button" className={layout === 'bilateral' ? 'active' : ''} onClick={() => setLayout('bilateral')}>Ambas rodillas</button><button type="button" disabled={preflight.fileKind === 'DICOM'} className={layout === 'single' ? 'active' : ''} onClick={() => setLayout('single')}>Una rodilla</button></div></fieldset>
         <fieldset><legend>Rodilla a evaluar</legend><div className="segment"><button type="button" className={side === 'R' ? 'active' : ''} onClick={() => setSide('R')}>Derecha</button><button type="button" className={side === 'L' ? 'active' : ''} onClick={() => setSide('L')}>Izquierda</button></div></fieldset>
         <label className="confirm-row"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required /><span><b>Confirmo proyección frontal con apoyo de peso</b><small>Este dato no siempre puede deducirse de la imagen.</small></span></label>
-        {preflight.reviewStatus === 'REJECTED' && <label className="span">Justificación clínica para continuar<textarea minLength={20} maxLength={500} value={overrideReason} onChange={(event) => setOverrideReason(event.target.value.slice(0, 500))} required /></label>}
         <details className="span advanced"><summary>Correcciones avanzadas de orientación</summary><div className="check-grid"><label><input type="checkbox" checked={advanced.invert} disabled={preflight.fileKind !== 'DICOM'} onChange={(event) => setAdvanced({ ...advanced, invert: event.target.checked })} /> Invertir polaridad DICOM</label><label><input type="checkbox" checked={advanced.swap} disabled={layout !== 'bilateral'} onChange={(event) => setAdvanced({ ...advanced, swap: event.target.checked })} /> Intercambiar lados</label></div></details>
       </>}
-      <button className="button primary span" disabled={busy || checking || !preflight || !layout || !confirmed}>{busy ? 'Guardando e iniciando…' : 'Guardar e iniciar análisis'}</button>
+      {blocked ? <div className="alert danger-alert span">{preflight?.reviewStatus === 'REJECTED' ? 'No se puede crear el estudio con este archivo. Seleccione una radiografía frontal de rodilla.' : 'La disposición detectada no es compatible con DICOM; use una radiografía bilateral o convierta una ROI válida a PNG/JPG.'}</div> : <button className="button primary span" disabled={busy || checking || !preflight || !layout || !confirmed}>{busy ? 'Guardando e iniciando…' : 'Guardar e iniciar análisis'}</button>}
     </form>
   </section>;
 }

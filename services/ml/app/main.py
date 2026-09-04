@@ -33,7 +33,7 @@ from .schemas import (
     ProgressionRequest,
     RiskResponse,
 )
-from .vision import assess_image
+from .vision import assess_image, classify_review_status
 
 
 logger = logging.getLogger("oa.ml")
@@ -165,22 +165,11 @@ async def image_preflight(image: UploadFile = File(...)):
     detected = detect_image(content)
     vision = await assess_image(settings, detected.external_review_png)
     assessment = vision.assessment
+    review_status = classify_review_status(assessment)
     if assessment is None:
-        review_status = "UNAVAILABLE"
         layout = "uncertain"
     else:
         layout = assessment.coverage
-        confidently_wrong = assessment.confidence >= 0.85 and (
-            not assessment.is_radiograph or assessment.anatomy == "other"
-        )
-        confidently_valid = (
-            assessment.confidence >= 0.70
-            and assessment.is_radiograph
-            and assessment.anatomy == "knee"
-            and assessment.view == "frontal_ap"
-            and assessment.quality != "unusable"
-        )
-        review_status = "REJECTED" if confidently_wrong else "ACCEPTED" if confidently_valid else "REVIEW_REQUIRED"
     supported = not (detected.file_kind == "DICOM" and layout == "single")
     suggested_source = None
     if layout in {"bilateral", "single"}:

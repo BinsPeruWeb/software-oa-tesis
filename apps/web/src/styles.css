@@ -30,3 +30,17 @@ html,body,#root{max-width:100%;overflow-x:clip}.page,.analysis-page,.workflow-st
   .main-area{padding-bottom:0}.desktop-toggle{display:none}.mobile-toggle{display:block}.mobile-scrim{display:block;position:fixed;inset:0;border:0;background:rgba(9,25,22,.44);z-index:19;opacity:0;pointer-events:none;transition:.2s}.mobile-open .mobile-scrim{opacity:1;pointer-events:auto}
   .content{width:100%;max-width:100%;padding:1.2rem .85rem 2.5rem;overflow:hidden}.page-head,.section-head{align-items:flex-start}.clinical-profile-card{display:grid;gap:1rem}.clinical-profile-card .button{width:100%}.analysis-timeline-grid{grid-template-columns:1fr}.history-card .section-head{display:grid;gap:.8rem}.history-list article{grid-template-columns:1fr}.history-list article b{grid-column:auto}.history-list article .icon-button{justify-self:start}.episode-actions{display:grid;grid-template-columns:1fr}.episode-actions .button{width:100%;white-space:normal;text-align:center}.episode-hero{grid-template-columns:minmax(0,1fr)}.episode-radiograph{min-height:230px}.episode-result{padding:1rem}.detail-grid{grid-template-columns:minmax(0,1fr);padding:1rem}.detail-grid .risk-grid{grid-template-columns:1fr}.analysis-card{padding:1rem}.preflight{grid-template-columns:minmax(0,1fr)}.preflight img{width:100%;max-width:100%}.form-grid,.analysis-form{grid-template-columns:minmax(0,1fr)}.confirm-row{grid-column:1/-1}.segment{min-width:0}.segment button{min-width:0;white-space:normal}.prediction-layout{grid-template-columns:minmax(0,1fr)}.duration-card{grid-column:1}.cam-grid{grid-template-columns:minmax(0,1fr)}.cam-grid img{max-width:100%}.probability-bars>div{grid-template-columns:32px minmax(0,1fr) 52px}.risk-grid{grid-template-columns:minmax(0,1fr)}
 }
+
+/* Carrusel de estudios y proporciones estables del análisis */
+.analysis-timeline-grid{display:flex;gap:1rem;max-width:100%;overflow-x:auto;overflow-y:hidden;padding:.15rem .05rem .75rem;scroll-snap-type:x mandatory;scroll-padding:.05rem;overscroll-behavior-inline:contain;scrollbar-width:none}
+.analysis-timeline-grid::-webkit-scrollbar{display:none}
+.analysis-timeline-grid .study-summary-card{flex:0 0 330px;width:330px;max-width:calc(100vw - 3.7rem);scroll-snap-align:start;scroll-snap-stop:always}
+.episode-radiograph{height:360px;min-height:360px;padding:14px}
+.episode-radiograph img{width:100%;height:100%;max-height:none;object-fit:contain}
+.probability-bars i{display:block;position:relative}
+.probability-bars b{max-width:100%;min-width:0;transition:width .35s ease}
+
+@media(max-width:760px){
+  .analysis-timeline-grid .study-summary-card{flex-basis:min(315px,calc(100vw - 3.7rem));width:min(315px,calc(100vw - 3.7rem))}
+  .episode-radiograph{height:270px;min-height:270px;padding:10px}
+}

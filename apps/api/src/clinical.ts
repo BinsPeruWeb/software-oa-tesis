@@ -409,7 +409,7 @@ export class ClinicalController {
     return new Promise((resolve, reject) => {
       const document = new PDFDocument({ size: 'A4', margin: 46, bufferPages: true, info: { Title: 'Reporte OA — borrador experimental' } });
       const chunks: Buffer[] = []; const width = 503;
-      const ensure = (height: number) => { if (document.y + height > 760) document.addPage(); };
+      const ensure = (height: number) => { if (document.y + height > 770) document.addPage(); };
       const heading = (title: string) => { ensure(42); document.moveDown(.7).fillColor('#173f3a').font('Helvetica-Bold').fontSize(13).text(title); document.moveDown(.35); };
       const field = (label: string, value: unknown, x: number, y: number, w: number) => {
         document.fillColor('#65736f').font('Helvetica').fontSize(7.5).text(label.toUpperCase(), x, y, { width: w });
@@ -430,6 +430,7 @@ export class ClinicalController {
         ensure(260); heading(`Estudio ${String(study.exam_date).slice(0, 10)} · Rodilla ${study.knee_side === 'L' ? 'izquierda' : 'derecha'}`);
         const blockY = document.y;
         document.roundedRect(46, blockY, width, 190, 7).fillAndStroke('#f6f8f7', '#dce3df');
+        document.roundedRect(58, blockY + 12, 205, 166, 5).fill('#15201e');
         if (study.preview) { try { document.image(study.preview, 58, blockY + 12, { fit: [205, 166], align: 'center', valign: 'center' }); } catch { /* vista textual */ } }
         document.fillColor('#65736f').font('Helvetica').fontSize(8).text(`Entrada: ${study.source_type}`, 280, blockY + 15, { width: 250 });
         const ensemble = study.predictions.find((item: any) => item.model_name === 'Ensemble-v2');
@@ -455,8 +456,21 @@ export class ClinicalController {
         } else document.fillColor('#8b5c34').fontSize(9).text('Clasificación KL aún no ejecutada.', 280, blockY + 42);
         document.y = blockY + 198;
         if (study.clinical) {
-          const c = study.clinical; document.font('Helvetica').fillColor('#40534f').fontSize(8.5)
-            .text(`Dolor: ${c.pain_score ?? 'No disponible'}/10 · Obesidad: ${c.obesity ? 'Sí' : 'No'} · Diabetes: ${c.diabetes ? 'Sí' : 'No'} · Hipertensión: ${c.hypertension ? 'Sí' : 'No'} · Nicotina: ${c.nicotine_use ? 'Sí' : 'No'} · Trauma: ${c.trauma_lower_extremity ? 'Sí' : 'No'}`, { width });
+          ensure(102); const c = study.clinical; const clinicalY = document.y + 5;
+          document.roundedRect(46, clinicalY, width, 88, 6).fillAndStroke('#f2f6f4', '#dce5e1');
+          document.fillColor('#173f3a').font('Helvetica-Bold').fontSize(8.5).text('CONTEXTO CLÍNICO DEL ESTUDIO', 58, clinicalY + 10, { width: width - 24 });
+          const clinicalFields = [
+            ['Dolor', c.pain_score == null ? 'No disponible' : `${c.pain_score}/10`],
+            ['Obesidad', c.obesity ? 'Sí' : 'No'], ['Diabetes', c.diabetes ? 'Sí' : 'No'],
+            ['Hipertensión', c.hypertension ? 'Sí' : 'No'], ['Consumo de nicotina', c.nicotine_use ? 'Sí' : 'No'],
+            ['Trauma de miembro inferior', c.trauma_lower_extremity ? 'Sí' : 'No'],
+          ];
+          clinicalFields.forEach(([label, value], index) => {
+            const column = index % 3; const row = Math.floor(index / 3); const x = 58 + column * 161; const y = clinicalY + 30 + row * 27;
+            document.fillColor('#74817d').font('Helvetica').fontSize(6.5).text(label.toUpperCase(), x, y, { width: 145, lineBreak: false });
+            document.fillColor('#18312e').font('Helvetica-Bold').fontSize(9).text(value, x, y + 10, { width: 145, lineBreak: false });
+          });
+          document.y = clinicalY + 94;
         }
         for (const prediction of study.predictions.filter((item: any) => item.model_name !== 'Ensemble-v2')) {
           ensure(56); const p = prediction.probabilities ?? {}; const name = prediction.model_name.startsWith('XGBoost') ? 'Riesgo de artroplastia · 24 meses' : 'Riesgo de progresión KL · 3–12 meses';
@@ -465,7 +479,7 @@ export class ClinicalController {
           document.fontSize(15).text(`${(Number(p.probability ?? 0) * 100).toFixed(1)} %`, 430, y - 2, { width: 100, align: 'right' }); document.y += 48;
         }
         if (study.gradcams.length) {
-          ensure(185); heading('Mapas de explicación Grad-CAM'); const y = document.y;
+          ensure(220); heading('Mapas de explicación Grad-CAM'); const y = document.y;
           study.gradcams.slice(0, 2).forEach((cam: any, index: number) => { try { document.image(cam.image, 46 + index * 255, y, { fit: [238, 145] }); } catch { /* imagen incompatible */ } document.fillColor('#65736f').fontSize(8).text(`${cam.backbone} · objetivo KL${cam.target_kl}`, 46 + index * 255, y + 150, { width: 238, align: 'center' }); });
           document.y = y + 170;
         }
@@ -474,13 +488,15 @@ export class ClinicalController {
         heading('Antecedentes longitudinales registrados');
         for (const item of context.history) { ensure(20); document.fillColor('#40534f').font('Helvetica').fontSize(8.5).text(`${String(item.exam_date).slice(0, 10)} · Rodilla ${item.knee_side} · KL ${item.confirmed_kl} · Dolor ${item.pain_score ?? 'N/D'}`); }
       }
-      ensure(70); document.moveDown().roundedRect(46, document.y, width, 54, 5).fill('#fbe9e7');
-      document.fillColor('#8b2e2e').font('Helvetica-Bold').fontSize(8.5).text('USO EXPERIMENTAL', 58, document.y + 11);
-      document.font('Helvetica').fontSize(8).text('Este documento requiere revisión médica. Los resultados no constituyen diagnóstico definitivo ni indicación automática de cirugía.', 58, document.y + 25, { width: 475 });
+      ensure(58); const disclaimerY = document.y + 2;
+      document.roundedRect(46, disclaimerY, width, 54, 5).fill('#fbe9e7');
+      document.fillColor('#8b2e2e').font('Helvetica-Bold').fontSize(8.5).text('USO EXPERIMENTAL', 58, disclaimerY + 11);
+      document.font('Helvetica').fontSize(8).text('Este documento requiere revisión médica. Los resultados no constituyen diagnóstico definitivo ni indicación automática de cirugía.', 58, disclaimerY + 25, { width: 475 });
+      document.y = disclaimerY + 56;
       const pages = document.bufferedPageRange();
       for (let index = pages.start; index < pages.start + pages.count; index += 1) {
         document.switchToPage(index); document.fillColor('#7a8783').font('Helvetica').fontSize(7.5)
-          .text(`Reporte ${context.episodeId.slice(0, 8)} · Generado ${new Date().toISOString().slice(0, 10)} · Página ${index + 1} de ${pages.count}`, 46, 800, { width, align: 'center' });
+          .text(`Reporte ${context.episodeId.slice(0, 8)} · Generado ${new Date().toISOString().slice(0, 10)} · Página ${index + 1} de ${pages.count}`, 46, 780, { width, align: 'center', lineBreak: false });
       }
       document.end();
     });

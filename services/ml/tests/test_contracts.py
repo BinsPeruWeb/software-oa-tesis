@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app.engine import XGB_FEATURES, build_arthroplasty_features
 from app.imaging import detect_image, extract_bilateral_roi, normalize_pixels, read_dicom, read_raster
 from app.schemas import ArthroplastyRequest, ProgressionRequest
+from app.vision import VisionAssessment, classify_review_status
 
 
 BASE_FLAGS = {
@@ -123,6 +124,28 @@ def test_preflight_detects_dicom_renders_png_and_masks_possible_border_text():
     assert detected.preview_png.startswith(b"\x89PNG")
     assert np.all(external[:10, :] == 0)
     assert b"PHI^MUST_NOT_LEAVE" not in detected.external_review_png
+
+
+@pytest.mark.parametrize(
+    ("is_radiograph", "anatomy"),
+    [(False, "other"), (False, "knee"), (True, "other")],
+)
+def test_preflight_hard_rejects_non_radiographs_and_non_knee_anatomy(is_radiograph, anatomy):
+    assessment = VisionAssessment(
+        is_radiograph=is_radiograph, anatomy=anatomy, view="uncertain", coverage="uncertain",
+        laterality="unknown", weight_bearing="unknown", quality="limited", confidence=0.25,
+        reason_codes=["not_knee"],
+    )
+    assert classify_review_status(assessment) == "REJECTED"
+
+
+def test_preflight_keeps_uncertain_knee_radiograph_for_manual_review():
+    assessment = VisionAssessment(
+        is_radiograph=True, anatomy="uncertain", view="uncertain", coverage="uncertain",
+        laterality="unknown", weight_bearing="unknown", quality="limited", confidence=0.4,
+        reason_codes=["uncertain_view"],
+    )
+    assert classify_review_status(assessment) == "REVIEW_REQUIRED"
 
 
 def test_integrity_rejects_modified_artifact(tmp_path, monkeypatch):

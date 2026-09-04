@@ -122,3 +122,18 @@ deshabilita el MFA del administrador.
 - Para un estudio actual KL4, la progresión LSTM se presenta como “No
   aplicable”, porque KL4 es el máximo de la escala y fue excluido como `t2` del
   entrenamiento.
+
+## Validación visual y reporte PDF — 2026-09-04
+
+- El resultado explícito `is_radiograph=false` o `anatomy=other` bloquea el
+  estudio, incluso con baja confianza; no existe excepción manual en cliente ni
+  servidor. Una anatomía incierta se conserva para revisión humana.
+- Pruebas ML: 16 aprobadas y 1 omitida; incluyen tres combinaciones de rechazo
+  de contenido y un caso incierto permitido para revisión.
+- Las barras KL usan porcentajes CSS válidos y reflejan la probabilidad real.
+- La ficha limita cada tarjeta de estudio a 330 px y usa carrusel con ajuste;
+  la radiografía del episodio mide 360 px de alto y 270 px en móvil.
+- El PDF distribuye el contexto clínico en seis campos, contiene imágenes en
+  marcos fijos y mantiene el pie dentro del área imprimible.
+- Prueba PDF sintética: un estudio completo genera una sola página; la falla
+  anterior generaba páginas adicionales durante la numeración.

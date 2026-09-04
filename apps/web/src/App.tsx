@@ -12,7 +12,7 @@ type AdminUser = { id: string; email: string; displayName: string; role: 'ADMIN'
 
 const today = new Date().toISOString().slice(0, 10);
 const formatDate = (value?: string | null) => value ? new Intl.DateTimeFormat('es-PE', { dateStyle: 'medium' }).format(new Date(value)) : '—';
-const percent = (value?: number | null) => value == null ? '—' : `${(Number(value) * 100).toFixed(1)} %`;
+const percent = (value?: number | null) => value == null ? '—' : `${(Number(value) * 100).toFixed(1)}%`;
 const flags = [['obesity', 'Obesidad'], ['diabetes', 'Diabetes'], ['hypertension', 'Hipertensión'], ['nicotineUse', 'Consumo de nicotina'], ['traumaLowerExtremity', 'Trauma de miembro inferior']] as const;
 
 function Login({ onDone }: { onDone: (user: User) => void }) {
