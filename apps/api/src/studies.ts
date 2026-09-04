@@ -296,9 +296,6 @@ export class StudiesController {
     if (!SOURCE_TYPES.includes(sourceType)) throw new BadRequestException('Tipo de entrada inválido');
     if (!['L', 'R'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
     const examDate = isoDate(body.examDate, 'Fecha del examen');
-    if (!asBool(body.acquisitionConfirmed, 'radiografía frontal con apoyo de peso')) {
-      throw new BadRequestException('Debe confirmar que la radiografía es frontal y fue tomada con apoyo de peso');
-    }
     const episode = (await this.db.query<{ patient_id: string }>(
       `SELECT e.patient_id FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
        WHERE e.id=$1 AND e.status='OPEN' AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [episodeId, user.id],

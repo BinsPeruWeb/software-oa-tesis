@@ -4,7 +4,7 @@ Versión: `oa-final-2026-09-03`.
 
 ## KL radiográfico
 
-Entradas: `DICOM_BILATERAL`, `RASTER_BILATERAL` y `RASTER_SINGLE_ROI`. Todas exigen confirmación AP, soporte de peso, orientación y lateralidad. La ROI izquierda se espeja. La ROI final es gris, normalizada por percentiles 0.5/99.5 y redimensionada a 320 × 320.
+Entradas: `DICOM_BILATERAL`, `RASTER_BILATERAL` y `RASTER_SINGLE_ROI`. El flujo está restringido a radiografías AP con soporte de peso y registra ese contrato de adquisición de forma implícita, sin un checkbox redundante; la lateralidad continúa siendo explícita. La ROI izquierda se espeja. La ROI final es gris, normalizada por percentiles 0.5/99.5 y redimensionada a 320 × 320.
 
 El ensemble es siempre el promedio 50/50 de ResNet50 y DenseNet121. Se conservan las cinco probabilidades de cada miembro, las cinco del ensemble, confianza, KL, hashes, pipeline, dispositivo y latencia. Grad-CAM se genera por backbone; no se representa como explicación causal.
 
@@ -25,4 +25,3 @@ Solo dolor y sexo admiten ausencia. Los cinco indicadores son booleanos obligato
 ## LSTM
 
 Usa exactamente `t1` y `t2`, cronológicos y de una misma rodilla. Cada punto tiene KLG confirmado, edad, dolor opcional, cinco indicadores obligatorios y lateralidad. Sexo no participa. `t2=KL4` es inelegible. Umbral: `0.4802020202`; objetivo: aumento de al menos un grado KL observado en 3–12 meses. Con menos de dos observaciones se informa “predicción no disponible”.
-

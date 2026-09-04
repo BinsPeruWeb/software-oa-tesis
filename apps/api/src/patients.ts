@@ -195,6 +195,8 @@ export class PatientsController {
   @Post(':id/episodes')
   async episode(@Param('id') patientId: string, @Body() body: { openedAt?: string }, @CurrentUser() user: AuthUser) {
     const patient = await this.patients.get(patientId, user);
+    const clinicalProfile = await this.db.query('SELECT 1 FROM patient_clinical_profiles WHERE patient_id=$1', [patient.id]);
+    if (!clinicalProfile.rowCount) throw new BadRequestException('Complete la historia clínica antes de iniciar un análisis');
     const openedAt = isoDate(body.openedAt ?? new Date().toISOString().slice(0, 10), 'Fecha del episodio');
     const result = await this.db.query<{ id: string }>('INSERT INTO clinical_episodes(patient_id,opened_at,created_by) VALUES($1,$2,$3) RETURNING id', [patient.id, openedAt, user.id]);
     await this.audit.record(user.id, 'EPISODE_CREATED', 'ClinicalEpisode', result.rows[0].id);

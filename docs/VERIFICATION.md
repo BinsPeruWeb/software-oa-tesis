@@ -137,3 +137,17 @@ deshabilita el MFA del administrador.
   marcos fijos y mantiene el pie dentro del área imprimible.
 - Prueba PDF sintética: un estudio completo genera una sola página; la falla
   anterior generaba páginas adicionales durante la numeración.
+
+## Cierre de flujo y carrusel — 2026-09-04
+
+- Se eliminó la confirmación manual redundante de proyección frontal con apoyo
+  de peso; el uso previsto permanece visible y el contrato se registra de forma
+  implícita al cargar.
+- La ficha valida que los cinco indicadores clínicos estén completos antes de
+  navegar; la pantalla de carga repite la comprobación y el servidor impide
+  crear un episodio sin perfil clínico.
+- El carrusel tiene controles anterior/siguiente, desplazamiento ajustado por
+  tarjeta y contención de ancho para expedientes con numerosos estudios.
+- La vista de episodio limita el marco a 620 px × 360 px y usa dimensiones
+  intrínsecas con `object-fit: contain`; en móvil conserva 270 px de alto.
+- TypeScript, 10 pruebas NestJS, compilación y 16 pruebas ML: aprobadas.

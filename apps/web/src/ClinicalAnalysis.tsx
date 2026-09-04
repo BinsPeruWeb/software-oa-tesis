@@ -15,7 +15,7 @@ const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
 function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: (ids: AnalysisIds) => void; notify: Notify }) {
   const [file, setFile] = useState<File>(); const [side, setSide] = useState('R'); const [layout, setLayout] = useState<'bilateral' | 'single' | ''>('');
-  const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10)); const [confirmed, setConfirmed] = useState(false);
+  const [examDate, setExamDate] = useState(new Date().toISOString().slice(0, 10));
   const [advanced, setAdvanced] = useState({ invert: false, swap: false });
   const [preflight, setPreflight] = useState<Preflight>(); const [checking, setChecking] = useState(false); const [busy, setBusy] = useState(false);
   const blocked = preflight?.reviewStatus === 'REJECTED' || preflight?.supported === false;
@@ -37,7 +37,7 @@ function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: 
     try {
       const episode = await post<{ id: string }>(`/api/patients/${patient.id}/episodes`, { openedAt: examDate });
       const data = new FormData(); data.append('image', file); data.append('examDate', examDate); data.append('preflightId', preflight.preflightId);
-      data.append('imageLayout', layout); data.append('kneeSide', side); data.append('acquisitionConfirmed', String(confirmed));
+      data.append('imageLayout', layout); data.append('kneeSide', side);
       data.append('invertPolarity', String(advanced.invert)); data.append('swapSides', String(advanced.swap));
       const study = await api<{ studyId: string; observationId: string; jobId: string }>(`/api/episodes/${episode.id}/studies`, { method: 'POST', body: data });
       notify('Estudio guardado. El análisis comenzó automáticamente.', 'success');
@@ -55,10 +55,10 @@ function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: 
         <label>Fecha del examen<input type="date" max={new Date().toISOString().slice(0, 10)} value={examDate} onChange={(event) => setExamDate(event.target.value)} required /></label>
         <fieldset><legend>Contenido detectado</legend><div className="segment"><button type="button" className={layout === 'bilateral' ? 'active' : ''} onClick={() => setLayout('bilateral')}>Ambas rodillas</button><button type="button" disabled={preflight.fileKind === 'DICOM'} className={layout === 'single' ? 'active' : ''} onClick={() => setLayout('single')}>Una rodilla</button></div></fieldset>
         <fieldset><legend>Rodilla a evaluar</legend><div className="segment"><button type="button" className={side === 'R' ? 'active' : ''} onClick={() => setSide('R')}>Derecha</button><button type="button" className={side === 'L' ? 'active' : ''} onClick={() => setSide('L')}>Izquierda</button></div></fieldset>
-        <label className="confirm-row"><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} required /><span><b>Confirmo proyección frontal con apoyo de peso</b><small>Este dato no siempre puede deducirse de la imagen.</small></span></label>
+        <div className="study-contract span"><b>Uso previsto</b><span>El análisis está diseñado para radiografías frontales de rodilla con apoyo de peso.</span></div>
         <details className="span advanced"><summary>Correcciones avanzadas de orientación</summary><div className="check-grid"><label><input type="checkbox" checked={advanced.invert} disabled={preflight.fileKind !== 'DICOM'} onChange={(event) => setAdvanced({ ...advanced, invert: event.target.checked })} /> Invertir polaridad DICOM</label><label><input type="checkbox" checked={advanced.swap} disabled={layout !== 'bilateral'} onChange={(event) => setAdvanced({ ...advanced, swap: event.target.checked })} /> Intercambiar lados</label></div></details>
       </>}
-      {blocked ? <div className="alert danger-alert span">{preflight?.reviewStatus === 'REJECTED' ? 'No se puede crear el estudio con este archivo. Seleccione una radiografía frontal de rodilla.' : 'La disposición detectada no es compatible con DICOM; use una radiografía bilateral o convierta una ROI válida a PNG/JPG.'}</div> : <button className="button primary span" disabled={busy || checking || !preflight || !layout || !confirmed}>{busy ? 'Guardando e iniciando…' : 'Guardar e iniciar análisis'}</button>}
+      {blocked ? <div className="alert danger-alert span">{preflight?.reviewStatus === 'REJECTED' ? 'No se puede crear el estudio con este archivo. Seleccione una radiografía frontal de rodilla.' : 'La disposición detectada no es compatible con DICOM; use una radiografía bilateral o convierta una ROI válida a PNG/JPG.'}</div> : <button className="button primary span" disabled={busy || checking || !preflight || !layout}>{busy ? 'Guardando e iniciando…' : 'Guardar e iniciar análisis'}</button>}
     </form>
   </section>;
 }

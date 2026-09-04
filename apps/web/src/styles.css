@@ -44,3 +44,16 @@ html,body,#root{max-width:100%;overflow-x:clip}.page,.analysis-page,.workflow-st
   .analysis-timeline-grid .study-summary-card{flex-basis:min(315px,calc(100vw - 3.7rem));width:min(315px,calc(100vw - 3.7rem))}
   .episode-radiograph{height:270px;min-height:270px;padding:10px}
 }
+
+.study-contract{display:grid;gap:.2rem;border-left:3px solid #d0a04a;background:#fff8e9;border-radius:8px;padding:.75rem 1rem;color:#56635f;font-size:.76rem}
+.study-contract b{color:#263d38}
+.timeline-card{width:100%;max-width:100%;min-width:0;overflow:hidden}
+.analysis-carousel{width:100%;max-width:100%;min-width:0;overflow:hidden;contain:inline-size}
+.carousel-head{min-height:36px;display:flex;align-items:center;justify-content:space-between;gap:1rem;color:var(--muted);font-size:.72rem}
+.carousel-head>div{display:flex;gap:.35rem}
+.carousel-head button{width:32px;height:32px;border:1px solid var(--line);border-radius:9px;background:#fff;color:var(--green);font-size:1.2rem;line-height:1}
+.carousel-head button:hover{background:#edf4f1}
+.analysis-carousel .analysis-timeline-grid{width:100%;max-width:100%;min-width:0;contain:inline-size}
+.episode-hero{width:100%;max-width:100%;min-width:0}
+.episode-radiograph{width:100%;max-width:620px;overflow:hidden;justify-self:center;align-self:start}
+.episode-radiograph img{display:block;width:auto!important;height:auto!important;max-width:100%;max-height:100%;object-fit:contain;object-position:center}
