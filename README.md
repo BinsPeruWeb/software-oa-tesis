@@ -35,14 +35,39 @@ la comprobación SHA-256 antes de iniciar inferencia.
 
 5. Abra `http://localhost:3000`.
 
+No es necesario instalar Node, Python, crear una `venv` ni instalar PostgreSQL
+en la laptop: esas versiones y dependencias se ejecutan dentro de los
+contenedores. Las credenciales iniciales están en `.env`; en el primer acceso la
+interfaz pedirá enrolar MFA con una aplicación autenticadora TOTP.
+
+Para detener o volver a iniciar el entorno sin perder los datos locales:
+
+```bash
+docker compose stop
+docker compose start
+```
+
+## Verificación local
+
+El smoke test automatizado recorre autenticación, paciente sintético, carga PNG,
+CNN, Grad-CAM, revisión clínica, XGBoost, LSTM y reporte PDF:
+
+```bash
+node scripts/smoke-test.mjs
+```
+
+En entorno `local`, si el script tuvo que enrolar MFA, lo deja nuevamente
+pendiente para que el propietario configure su propio autenticador. Para las
+pruebas Python con los modelos reales se usa el objetivo Docker `test`; consulte
+`docs/VERIFICATION.md` para los comandos y los resultados registrados.
+
 El perfil NVIDIA local requiere NVIDIA Container Toolkit. Configure
 `ML_SERVICE_URL=http://ml-inference-gpu:8000` y ejecute
 `docker compose --profile gpu up --build`.
 
-## Datos y despliegue
+## Seguridad de datos
 
 Nunca confirme DICOM, PNG/JPG clínicos, exportaciones, backups, `.env`, tokens o
-claves. `staging` admite únicamente datos sintéticos/desidentificados. El entorno
-Railway de producción con datos identificables no debe habilitarse sin aprobación
-institucional y revisión de seguridad documentada. Consulte `docs/DEPLOYMENT.md`
-y `docs/SECURITY_CHECKLIST.md`.
+claves. Las pruebas actuales deben usar únicamente datos sintéticos o
+desidentificados. El despliegue externo se ha dejado deliberadamente para una
+etapa posterior. Consulte `docs/SECURITY_CHECKLIST.md` antes de usar datos reales.

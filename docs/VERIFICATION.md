@@ -1,29 +1,58 @@
-# Estado de verificación
+# Estado de verificación local
 
-## Ejecutado en la estación de desarrollo
+Fecha de ejecución: 2026-09-04. El despliegue externo está fuera de esta etapa.
+
+## Resultado actual
 
 - `npm run typecheck`: aprobado para contratos, React y NestJS.
-- `npm test`: aprobadas pruebas de AES-GCM/HMAC y vector RFC 6238 TOTP.
-- `npm run build`: aprobado; genera bundles de producción web y API.
-- `npm audit --omit=dev --offline`: 0 vulnerabilidades conocidas en el índice local.
-- Verificación SHA-256: aprobados los 51 archivos en la fuente inmutable y en `.models`.
-- Compilación sintáctica Python: aprobada para aplicación y pruebas.
-- Parseo de `compose.yaml` y archivos JSON: aprobado.
+- `npm test`: 2/2 pruebas NestJS aprobadas (AES-256-GCM/HMAC y vector RFC 6238 TOTP).
+- `npm run build`: aprobado para los bundles de producción web y API.
+- `docker compose build web-api ml-inference`: aprobado con imágenes CPU.
+- `docker compose up -d`: PostgreSQL, FastAPI y NestJS/React iniciados correctamente.
+- Página pública: HTTP 200 en `http://localhost:3000`, CSP activa y `Cache-Control: no-store`.
+- Modelos: 51/51 hashes SHA-256 verificados antes de deserializar.
+- Suite ML dentro de Docker: 12/12 pruebas aprobadas con los artefactos reales.
+- Smoke test E2E: aprobado para MFA, sesión/CSRF, paciente cifrado, búsqueda HMAC,
+  episodio, PNG ROI, CNN CPU, cinco probabilidades KL, dos Grad-CAM, revisión,
+  datos clínicos, XGBoost con 19 features, LSTM y PDF borrador.
+- Cola persistente: un trabajo sintético dejado en `RUNNING` fue recuperado y
+  terminó en `SUCCEEDED` después de reiniciar `web-api`.
+- Logs revisados: no se encontraron identificadores ni nombres del payload sintético.
+- Consumo ocioso observado: FastAPI con modelos cargados entre 0.5 y 0.9 GiB;
+  NestJS aproximadamente 55–60 MiB y PostgreSQL aproximadamente 50 MiB.
 
-## Preparado, pendiente de infraestructura
+Las advertencias de XGBoost al cargar el artefacto son esperadas: el checkpoint
+conserva configuración GPU y XGBoost la cambia explícitamente a CPU cuando no hay
+una GPU visible. La inferencia y los tests finalizaron correctamente.
 
-- Las pruebas Python cubren PNG, JPG, DICOM, polaridad, espejo izquierdo, orden XGBoost, faltantes, antecedentes inválidos, elegibilidad LSTM e integridad de artefactos.
-- La prueba marcada `models` carga el paquete completo y verifica suma de probabilidades y promedio CNN 50/50.
-- CI ejecuta build y contratos sin incorporar modelos privados.
+## Repetir las pruebas ML reales
 
-No se ejecutaron todavía `docker compose`, la inferencia completa PyTorch, el perfil CUDA, reinicio real durante inferencia, restauración de backup ni despliegue Railway: Docker no está instalado en esta estación y aún no existen los recursos privados de Railway/GitHub. Deben completarse antes de declarar el sistema listo para uso clínico.
+Desde PowerShell en la raíz del repositorio:
 
-## Criterios antes de staging
+```powershell
+docker build --target test -f services/ml/Dockerfile -t oa-thesis-ml-test .
+$modelPath = (Resolve-Path '.models\oa-final-2026-09-03').Path
+docker run --rm -e MODEL_ROOT=/models --mount "type=bind,source=$modelPath,target=/models,readonly" oa-thesis-ml-test
+```
 
-1. Ejecutar `pytest services/ml/tests -m models` dentro del contenedor con el volumen verificado.
-2. Completar un flujo E2E con DICOM, PNG/JPG bilateral y ROI de ambos lados.
-3. Interrumpir ML durante un trabajo y confirmar su recuperación.
-4. Ejecutar revisión de permisos, sesiones, MFA, fuerza bruta y ausencia de PHI.
-5. Medir memoria y latencia CPU; luego fijar límites Railway.
-6. Probar backup y restauración en un ambiente descartable.
+Resultado esperado: `12 passed`. El smoke test funcional se repite con:
 
+```powershell
+node scripts/smoke-test.mjs
+```
+
+## Pendiente antes de uso clínico real
+
+1. Validar el flujo E2E con muestras clínicas desidentificadas representativas:
+   DICOM bilateral, PNG/JPG bilateral y ROI izquierda/derecha.
+2. Hacer pruebas de interfaz en navegadores y dispositivos objetivo; actualmente
+   no hay una suite automatizada de navegador.
+3. Ejecutar el perfil CUDA en hardware NVIDIA y comparar paridad/latencia con CPU.
+4. Completar revisión de permisos, sesiones, fuerza bruta y pruebas de seguridad.
+5. Diseñar, cifrar y probar backup/restauración en un entorno descartable.
+6. Obtener revisión clínica de la presentación, Grad-CAM y advertencias.
+7. Completar la autorización institucional antes de ingresar información identificable.
+
+Estos pendientes no impiden probar ahora el prototipo local con datos sintéticos
+o correctamente desidentificados, pero sí impiden declararlo apto para atención
+clínica o producción.

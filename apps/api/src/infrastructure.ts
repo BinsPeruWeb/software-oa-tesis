@@ -8,8 +8,18 @@ import { Pool, PoolClient, QueryResultRow } from 'pg';
 export class DatabaseService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DatabaseService.name);
   readonly pool = new Pool({ connectionString: process.env.DATABASE_URL, max: 12 });
+  private migration: Promise<void> | undefined;
 
   async onModuleInit() {
+    await this.ensureInitialized();
+  }
+
+  private ensureInitialized() {
+    this.migration ??= this.runMigrations();
+    return this.migration;
+  }
+
+  private async runMigrations() {
     const directory = path.resolve(process.cwd(), 'migrations');
     const files = (await fs.readdir(directory)).filter((name) => name.endsWith('.sql')).sort();
     const client = await this.pool.connect();
@@ -36,11 +46,13 @@ export class DatabaseService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  query<T extends QueryResultRow = QueryResultRow>(sql: string, values: unknown[] = []) {
+  async query<T extends QueryResultRow = QueryResultRow>(sql: string, values: unknown[] = []) {
+    await this.ensureInitialized();
     return this.pool.query<T>(sql, values);
   }
 
   async transaction<T>(operation: (client: PoolClient) => Promise<T>): Promise<T> {
+    await this.ensureInitialized();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -135,4 +147,3 @@ export class AuditService {
     );
   }
 }
-
