@@ -9,7 +9,7 @@
 - [ ] Claves distintas, aleatorias, custodiadas y con rotación ensayada.
 - [ ] FastAPI y PostgreSQL sin dominio público.
 - [ ] HTTPS y `COOKIE_SECURE=true`.
-- [ ] MFA verificado para todos los usuarios activos.
+- [ ] MFA verificado para administradores y decisión institucional documentada para médicos.
 - [ ] Revisión de roles, bloqueo, expiración, CSRF y fuerza bruta.
 - [ ] Prueba automatizada de ausencia de PHI en logs/errores/caché.
 - [ ] PeruDevs autorizado para procesar DNI y política contractual revisada.

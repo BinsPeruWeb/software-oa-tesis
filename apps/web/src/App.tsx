@@ -1,192 +1,130 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import { api, post } from './api';
+import ClinicalAnalysis from './ClinicalAnalysis';
+import { Notify, Paged, Patient, User } from './types';
+import { Badge, ConfirmModal, Empty, Modal, Pagination, Spinner } from './ui';
 
-type User = { id: string; displayName: string; role: string };
-type Patient = { id: string; names: string; surnames: string; medicalRecordNumber: string; dni: string; birthDate: string; sex: string | null };
-type Prediction = { predictedKl: number; confidence: number; ensemble: Record<string, number>; members: Record<string, Record<string, number>> };
-type Preflight = {
-  preflightId: string; fileKind: 'DICOM' | 'RASTER'; examDate: string | null; previewDataUrl: string;
-  reviewStatus: 'ACCEPTED' | 'REJECTED' | 'REVIEW_REQUIRED' | 'UNAVAILABLE';
-  suggestedLayout: 'bilateral' | 'single' | 'uncertain'; supported: boolean; model: string; costUsd: number | null;
-  assessment: null | { view: string; coverage: string; laterality: string; weight_bearing: string; quality: string; confidence: number };
-};
-
-const blankFlags = { obesity: '', diabetes: '', hypertension: '', nicotineUse: '', traumaLowerExtremity: '' };
-const booleans = (value: typeof blankFlags) => ({ obesity: value.obesity === 'true', diabetes: value.diabetes === 'true', hypertension: value.hypertension === 'true', nicotineUse: value.nicotineUse === 'true', traumaLowerExtremity: value.traumaLowerExtremity === 'true' });
-const percent = (value: number) => `${(value * 100).toFixed(1)} %`;
+type Route = { name: string; patientId?: string };
+type Toast = { id: number; message: string; tone: string };
+const today = new Date().toISOString().slice(0, 10);
+const formatDate = (value?: string | null) => value ? new Intl.DateTimeFormat('es-PE', { dateStyle: 'medium' }).format(new Date(value)) : '—';
 
 function Login({ onDone }: { onDone: (user: User) => void }) {
-  const [email, setEmail] = useState(''); const [password, setPassword] = useState('');
-  const [challenge, setChallenge] = useState<any>(); const [code, setCode] = useState('');
-  const [error, setError] = useState('');
+  const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [challenge, setChallenge] = useState<any>(); const [code, setCode] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
   async function login(event: FormEvent) {
-    event.preventDefault(); setError('');
-    try { setChallenge(await post('/api/auth/login', { email, password })); } catch (reason: any) { setError(reason.message); }
+    event.preventDefault(); setError(''); setBusy(true);
+    try { const result = await post<any>('/api/auth/login', { email, password }); if (result.authenticated) onDone(await api('/api/auth/me')); else setChallenge(result); }
+    catch (reason: any) { setError(reason.message); } finally { setBusy(false); }
   }
   async function verify(event: FormEvent) {
-    event.preventDefault(); setError('');
+    event.preventDefault(); setError(''); setBusy(true);
     try { await post('/api/auth/mfa/verify', { challengeToken: challenge.challengeToken, code }); onDone(await api('/api/auth/me')); }
-    catch (reason: any) { setError(reason.message); }
+    catch (reason: any) { setError(reason.message); } finally { setBusy(false); }
   }
-  return <main className="login-shell">
-    <section className="brand-panel"><div className="brand-mark">OA</div><p>Apoyo experimental para evaluación radiográfica de rodilla.</p><small>No reemplaza el criterio médico.</small></section>
-    <section className="login-card">
-      <p className="eyebrow">Acceso clínico seguro</p><h1>{challenge ? 'Verificación en dos pasos' : 'Iniciar sesión'}</h1>
-      {!challenge ? <form onSubmit={login} className="stack">
-        <label>Correo<input type="email" maxLength={254} value={email} onChange={(e) => setEmail(e.target.value.slice(0,254))} required autoComplete="username" /></label>
-        <label>Contraseña<input type="password" maxLength={128} value={password} onChange={(e) => setPassword(e.target.value.slice(0,128))} required autoComplete="current-password" /></label>
-        <button>Continuar</button>
-      </form> : <form onSubmit={verify} className="stack">
-        {challenge.enrollment && <div className="enrollment"><strong>Configure su autenticador</strong><p>Ingrese esta clave una única vez:</p><code>{challenge.enrollment.secret}</code></div>}
-        <label>Código TOTP de 6 dígitos<input inputMode="numeric" minLength={6} maxLength={6} pattern="[0-9]{6}" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g,'').slice(0,6))} required autoFocus /></label>
-        <button>Verificar e ingresar</button><button type="button" className="ghost" onClick={() => setChallenge(undefined)}>Volver</button>
-      </form>}
-      {error && <p className="error" role="alert">{error}</p>}
-    </section>
-  </main>;
+  return <main className="auth-shell"><section className="auth-visual"><div className="brand-symbol">OA</div><div><span className="overline light">Plataforma clínica experimental</span><h1>Decisiones mejor informadas, seguimiento más claro.</h1><p>Clasificación radiográfica y análisis longitudinal de osteoartritis de rodilla.</p></div><small>Herramienta de investigación · No sustituye el criterio médico</small></section>
+    <section className="auth-form"><div className="auth-card"><div className="mobile-brand">OA · Plataforma clínica</div><span className="overline">Acceso seguro</span><h2>{challenge ? 'Verificación administrativa' : 'Bienvenido'}</h2><p>{challenge ? 'Ingrese el código temporal de su autenticador.' : 'Ingrese sus credenciales para abrir el panel.'}</p>
+      {!challenge ? <form className="form-stack" onSubmit={login}><label>Correo electrónico<input type="email" maxLength={254} value={email} onChange={(event) => setEmail(event.target.value.slice(0, 254))} autoComplete="username" required /></label><label>Contraseña<input type="password" maxLength={128} value={password} onChange={(event) => setPassword(event.target.value.slice(0, 128))} autoComplete="current-password" required /></label><button className="button primary" disabled={busy}>{busy ? 'Ingresando…' : 'Ingresar al panel'}</button></form> : <form className="form-stack" onSubmit={verify}>{challenge.enrollment && <div className="enrollment"><b>Configure su autenticador</b><code>{challenge.enrollment.secret}</code></div>}<label>Código de 6 dígitos<input inputMode="numeric" minLength={6} maxLength={6} pattern="[0-9]{6}" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))} autoFocus required /></label><button className="button primary" disabled={busy}>Verificar</button><button type="button" className="button secondary" onClick={() => setChallenge(undefined)}>Volver</button></form>}
+      {error && <div className="alert danger-alert">{error}</div>}</div></section></main>;
 }
 
-function PatientStep({ onSelect }: { onSelect: (patient: Patient) => void }) {
-  const [identifier, setIdentifier] = useState(''); const [mode, setMode] = useState<'search' | 'create'>('search'); const [error, setError] = useState('');
-  const [form, setForm] = useState({ medicalRecordNumber: '', dni: '', names: '', surnames: '', birthDate: '', sex: '', phone: '', email: '' });
-  const [lookupBusy, setLookupBusy] = useState(false); const [lookupMessage, setLookupMessage] = useState('');
-  async function search(event: FormEvent) { event.preventDefault(); setError(''); try { const patient = await api<Patient | null>(`/api/patients/search?identifier=${encodeURIComponent(identifier)}`); patient ? onSelect(patient) : setError('No se encontró el paciente.'); } catch (e: any) { setError(e.message); } }
-  async function create(event: FormEvent) { event.preventDefault(); setError(''); try { onSelect(await post('/api/patients', { ...form, sex: form.sex || null, email: form.email || null })); } catch (e: any) { setError(e.message); } }
-  async function lookupDni() {
-    if (!/^\d{8}$/.test(form.dni)) { setError('El DNI debe contener exactamente 8 dígitos.'); return; }
-    setLookupBusy(true); setError(''); setLookupMessage('');
-    try {
-      const value = await api<any>(`/api/patients/lookup-dni?dni=${form.dni}`);
-      if (!value.found) { setLookupMessage('No se encontraron datos para ese DNI. Puede completar el formulario manualmente.'); return; }
-      setForm((current) => ({ ...current, names: value.names ?? '', surnames: value.surnames ?? '', birthDate: value.birthDate ?? '', sex: value.sex ?? '' }));
-      setLookupMessage('Datos encontrados. Revíselos antes de registrar.');
-    } catch (e: any) { setError(e.message); } finally { setLookupBusy(false); }
-  }
-  return <section className="card wide">
-    <div className="section-title"><span>01</span><div><p className="eyebrow">Identificación</p><h2>Paciente</h2></div></div>
-    <div className="tabs"><button className={mode === 'search' ? 'active' : ''} onClick={() => setMode('search')}>Buscar</button><button className={mode === 'create' ? 'active' : ''} onClick={() => setMode('create')}>Registrar</button></div>
-    {mode === 'search' ? <form onSubmit={search} className="inline-form"><label>DNI o historia clínica<input value={identifier} maxLength={30} onChange={(e) => setIdentifier(e.target.value.slice(0,30))} required /></label><button>Buscar</button></form> :
-      <form onSubmit={create} className="form-grid">
-        <label>Historia clínica<input value={form.medicalRecordNumber} minLength={1} maxLength={30} pattern="[A-Za-z0-9._/-]+" onChange={(e)=>setForm({...form,medicalRecordNumber:e.target.value.slice(0,30)})} required /></label>
-        <label>DNI<div className="field-action"><input value={form.dni} inputMode="numeric" minLength={8} maxLength={8} pattern="[0-9]{8}" onChange={(e)=>setForm({...form,dni:e.target.value.replace(/\D/g,'').slice(0,8)})} required /><button type="button" className="secondary" disabled={lookupBusy || form.dni.length!==8} onClick={lookupDni}>{lookupBusy?'Consultando…':'Autocompletar'}</button></div><small>La consulta se realiza en PeruDevs solo al pulsar el botón.</small></label>
-        <label>Nombres<input value={form.names} minLength={2} maxLength={80} onChange={(e)=>setForm({...form,names:e.target.value.slice(0,80)})} required /></label>
-        <label>Apellidos<input value={form.surnames} minLength={2} maxLength={80} onChange={(e)=>setForm({...form,surnames:e.target.value.slice(0,80)})} required /></label>
-        <label>Nacimiento<input type="date" max={new Date().toISOString().slice(0,10)} value={form.birthDate} onChange={(e)=>setForm({...form,birthDate:e.target.value})} required /></label>
-        <label>Celular<input value={form.phone} inputMode="numeric" minLength={9} maxLength={9} pattern="9[0-9]{8}" placeholder="9XXXXXXXX" onChange={(e)=>setForm({...form,phone:e.target.value.replace(/\D/g,'').slice(0,9)})} required /></label>
-        <label>Correo opcional<input type="email" maxLength={254} value={form.email} onChange={(e)=>setForm({...form,email:e.target.value.slice(0,254)})} /></label>
-        <label>Sexo<select value={form.sex} onChange={(e) => setForm({ ...form, sex: e.target.value })}><option value="">No registrado</option><option value="female">Femenino</option><option value="male">Masculino</option></select></label>
-        {lookupMessage && <p className="success span">{lookupMessage}</p>}
-        <button className="span">Registrar paciente</button>
-      </form>}
-    {error && <p className="error">{error}</p>}
-  </section>;
+function Metric({ label, value, detail, tone = '' }: { label: string; value: number | string; detail: string; tone?: string }) { return <article className={`metric ${tone}`}><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>; }
+
+function AdminDashboard() {
+  const [data, setData] = useState<any>(); useEffect(() => { void api('/api/admin/dashboard').then(setData); }, []);
+  if (!data) return <Spinner />;
+  return <Page title="Resumen del sistema" subtitle="Actividad operativa sin exponer información clínica identificable."><div className="metric-grid"><Metric label="Usuarios activos" value={data.activeUsers} detail="Cuentas habilitadas" /><Metric label="Médicos" value={data.clinicians} detail="Profesionales activos" /><Metric label="Pacientes" value={data.patients} detail="Conteo agregado" /><Metric label="Inferencias activas" value={data.activeJobs} detail="En cola o ejecutándose" /><Metric label="Trabajos fallidos" value={data.failedJobs} detail="Requieren revisión" tone={data.failedJobs ? 'metric-warning' : ''} /><Metric label="Eventos 24 h" value={data.events24h} detail="Trazabilidad reciente" /></div><section className="surface info-panel"><span className="overline">Estado</span><h2>Servicios clínicos disponibles</h2><p>La administración técnica gestiona cuentas, seguridad y configuración. Los datos de pacientes permanecen en el espacio privado de cada médico responsable.</p></section></Page>;
 }
 
-function StudyStep({ patient, onReady }: { patient: Patient; onReady: (ids: { episodeId: string; observationId: string; kneeSide: string }) => void }) {
-  const [file, setFile] = useState<File>(); const [side, setSide] = useState('R'); const [layout,setLayout]=useState<'bilateral'|'single'|''>('');
-  const [examDate, setExamDate] = useState(new Date().toISOString().slice(0,10)); const [confirmed,setConfirmed]=useState(false);
-  const [advanced,setAdvanced]=useState({invert:false,swap:false}); const [overrideReason,setOverrideReason]=useState('');
-  const [preflight,setPreflight]=useState<Preflight>(); const [checking,setChecking]=useState(false);
-  const [busy, setBusy] = useState(false); const [error, setError] = useState('');
-  async function chooseFile(selected?:File) {
-    setFile(selected); setPreflight(undefined); setLayout(''); setError(''); setOverrideReason('');
-    if(!selected) return;
-    setChecking(true);
-    try {
-      const data=new FormData(); data.append('image',selected);
-      const result=await api<Preflight>('/api/studies/preflight',{method:'POST',body:data});
-      setPreflight(result);
-      if(result.examDate) setExamDate(result.examDate);
-      if(result.fileKind==='DICOM' && result.suggestedLayout!=='single') setLayout('bilateral');
-      else if(result.suggestedLayout!=='uncertain') setLayout(result.suggestedLayout);
-      if(result.assessment?.laterality==='left') setSide('L'); else if(result.assessment?.laterality==='right') setSide('R');
-    } catch(e:any){setError(e.message);} finally{setChecking(false);}
-  }
-  async function submit(event: FormEvent) {
-    event.preventDefault(); if (!file || !preflight || !layout) return; setBusy(true); setError('');
-    try {
-      const episode = await post<{ id: string }>(`/api/patients/${patient.id}/episodes`, { openedAt: examDate });
-      const data = new FormData(); data.append('image', file); data.append('examDate', examDate); data.append('preflightId',preflight.preflightId); data.append('imageLayout',layout); data.append('kneeSide', side);
-      data.append('acquisitionConfirmed',String(confirmed)); data.append('invertPolarity',String(advanced.invert)); data.append('swapSides',String(advanced.swap));
-      if(overrideReason) data.append('manualOverrideReason',overrideReason);
-      const study = await api<{ observationId: string }>(`/api/episodes/${episode.id}/studies`, { method: 'POST', body: data });
-      onReady({ episodeId: episode.id, observationId: study.observationId, kneeSide: side });
-    } catch (e: any) { setError(e.message); } finally { setBusy(false); }
-  }
-  return <section className="card wide">
-    <div className="patient-chip"><strong>{patient.surnames}, {patient.names}</strong><span>HC {patient.medicalRecordNumber}</span></div>
-    <div className="section-title"><span>02</span><div><p className="eyebrow">Estudio índice</p><h2>Cargar radiografía</h2></div></div>
-    <form onSubmit={submit} className="form-grid">
-      <label className="span upload-box">Archivo DICOM, PNG o JPG<input type="file" accept=".dcm,application/dicom,image/png,image/jpeg" onChange={(e)=>void chooseFile(e.target.files?.[0])} required /><small>La aplicación detectará el formato. Para revisar el contenido enviará a OpenRouter una miniatura reducida, sin metadatos DICOM y con bordes enmascarados.</small></label>
-      {checking && <p className="analysis-state span">Verificando que sea una radiografía de rodilla…</p>}
-      {preflight && <div className="preflight span">
-        <img src={preflight.previewDataUrl} alt="Vista previa de la radiografía seleccionada" />
-        <div><strong>{preflight.reviewStatus==='ACCEPTED'?'Radiografía frontal de rodilla reconocida':preflight.reviewStatus==='REJECTED'?'La imagen no fue reconocida como radiografía de rodilla':preflight.reviewStatus==='UNAVAILABLE'?'Revisión automática no disponible':'La imagen necesita confirmación manual'}</strong>
-          <p>{preflight.fileKind==='DICOM'?'Archivo DICOM detectado':'Imagen PNG/JPG detectada'} · revisión con {preflight.model}</p>
-          <small>Se envió al proveedor una miniatura sin metadatos DICOM y con bordes enmascarados. Esta revisión no realiza diagnóstico.</small>
-        </div>
-      </div>}
-      {preflight && <>
-        <label>Fecha del examen<input type="date" max={new Date().toISOString().slice(0,10)} value={examDate} onChange={(e) => setExamDate(e.target.value)} required /></label>
-        <fieldset><legend>¿Qué contiene la imagen?</legend><div className="segments"><button type="button" className={layout==='bilateral'?'active':''} onClick={()=>setLayout('bilateral')}>Ambas rodillas</button><button type="button" className={layout==='single'?'active':''} disabled={preflight.fileKind==='DICOM'} onClick={()=>setLayout('single')}>Una rodilla</button></div></fieldset>
-        <fieldset><legend>Rodilla a analizar</legend><div className="segments"><button type="button" className={side==='R'?'active':''} onClick={()=>setSide('R')}>Derecha</button><button type="button" className={side==='L'?'active':''} onClick={()=>setSide('L')}>Izquierda</button></div></fieldset>
-        <label className="confirm-box span"><input type="checkbox" checked={confirmed} onChange={(e)=>setConfirmed(e.target.checked)} required /><span><strong>Confirmo que es una radiografía frontal tomada con apoyo de peso</strong><small>Esta condición no puede comprobarse con total fiabilidad mediante la imagen.</small></span></label>
-        {preflight.reviewStatus==='REJECTED' && <label className="span">Motivo para continuar después de revisión manual<textarea minLength={20} maxLength={500} value={overrideReason} onChange={(e)=>setOverrideReason(e.target.value.slice(0,500))} required placeholder="Explique por qué considera que el archivo sí corresponde al estudio…" /></label>}
-        {!preflight.supported && preflight.fileKind==='DICOM' && <p className="notice span">El revisor sugirió que este DICOM contiene una sola rodilla. Verifique la vista previa: el contrato DICOM requiere una imagen bilateral.</p>}
-        <details className="span advanced"><summary>Opciones avanzadas de orientación</summary><div className="checks"><label><input type="checkbox" checked={advanced.invert} disabled={preflight.fileKind!=='DICOM'} onChange={(e)=>setAdvanced({...advanced,invert:e.target.checked})} /> La imagen DICOM se ve con polaridad invertida</label><label><input type="checkbox" checked={advanced.swap} disabled={layout!=='bilateral'} onChange={(e)=>setAdvanced({...advanced,swap:e.target.checked})} /> Intercambiar los lados de la imagen bilateral</label></div></details>
-      </>}
-      <button className="span" disabled={busy||checking||!preflight||!layout||!confirmed}>{busy ? 'Cifrando y cargando…' : 'Continuar con esta radiografía'}</button>
-    </form>{error && <p className="error">{error}</p>}
-  </section>;
+type AdminUser = { id: string; email: string; displayName: string; role: string; active: boolean; professionalLicense: string | null; specialty: string | null; lastAccess: string | null };
+function UserForm({ initial, onClose, onSaved, notify }: { initial?: AdminUser; onClose: () => void; onSaved: () => void; notify: Notify }) {
+  const [form, setForm] = useState({ email: initial?.email ?? '', displayName: initial?.displayName ?? '', password: '', role: initial?.role ?? 'CLINICIAN', professionalLicense: initial?.professionalLicense ?? '', specialty: initial?.specialty ?? '' }); const [busy, setBusy] = useState(false);
+  async function save(event: FormEvent) { event.preventDefault(); setBusy(true); try { await api(initial ? `/api/admin/users/${initial.id}` : '/api/admin/users', { method: initial ? 'PATCH' : 'POST', body: JSON.stringify({ ...form, password: form.password || undefined }) }); notify(initial ? 'Usuario actualizado' : 'Usuario registrado', 'success'); onSaved(); onClose(); } catch (error: any) { notify(error.message, 'error'); } finally { setBusy(false); } }
+  return <Modal title={initial ? 'Editar usuario' : 'Registrar usuario'} onClose={onClose}><form className="form-grid" onSubmit={save}><label>Nombre completo<input minLength={2} maxLength={100} value={form.displayName} onChange={(event) => setForm({ ...form, displayName: event.target.value.slice(0, 100) })} required /></label><label>Correo<input type="email" maxLength={254} value={form.email} onChange={(event) => setForm({ ...form, email: event.target.value.slice(0, 254) })} required /></label><label>Rol<select value={form.role} onChange={(event) => setForm({ ...form, role: event.target.value })}><option value="CLINICIAN">Médico</option><option value="ADMIN">Administrador técnico</option></select></label><label>Colegiatura<input maxLength={30} value={form.professionalLicense} onChange={(event) => setForm({ ...form, professionalLicense: event.target.value.slice(0, 30) })} /></label><label>Especialidad<input maxLength={80} value={form.specialty} onChange={(event) => setForm({ ...form, specialty: event.target.value.slice(0, 80) })} /></label><label>{initial ? 'Nueva contraseña (opcional)' : 'Contraseña'}<input type="password" minLength={14} maxLength={128} value={form.password} onChange={(event) => setForm({ ...form, password: event.target.value.slice(0, 128) })} required={!initial} /></label><div className="modal-actions span"><button type="button" className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" disabled={busy}>{busy ? 'Guardando…' : 'Guardar usuario'}</button></div></form></Modal>;
 }
 
-function ModelStep({ ids, patient }: { ids: { episodeId: string; observationId: string; kneeSide: string }; patient: Patient }) {
-  const [job, setJob] = useState<any>(); const [prediction, setPrediction] = useState<Prediction>(); const [predictionId, setPredictionId] = useState('');
-  const [cams, setCams] = useState<Array<{backbone:string;targetKl:number;dataUrl:string}>>([]);
-  const [confirmedKl, setConfirmedKl] = useState(0); const [reviewed, setReviewed] = useState(false); const [flags, setFlags] = useState(blankFlags); const [pain, setPain] = useState('');
-  const [clinicalSaved, setClinicalSaved] = useState(false); const [risk, setRisk] = useState<any>({}); const [prior, setPrior] = useState({ examDate: '', confirmedKl: '0', painScore: '', ...blankFlags });
-  const [reportId, setReportId] = useState(''); const [error, setError] = useState('');
-  async function run() {
-    try {
-      const queued = await post<any>(`/api/observations/${ids.observationId}/inference`, {}); setJob(queued);
-      for (let n = 0; n < 240; n++) {
-        await new Promise((resolve) => setTimeout(resolve, 1000)); const state = await api<any>(`/api/inference-jobs/${queued.id}`); setJob(state);
-        if (state.status === 'SUCCEEDED') { setPrediction(state.probabilities); setPredictionId(state.predictionId); setConfirmedKl(state.probabilities.predictedKl); return; }
-        if (state.status === 'FAILED') throw new Error(`Inferencia fallida (${state.errorCode})`);
-      } throw new Error('La inferencia excedió el tiempo esperado');
-    } catch (e: any) { setError(e.message); }
-  }
-  async function review(decision: 'CONFIRMED'|'CORRECTED'|'REJECTED') { try { await post(`/api/predictions/${predictionId}/review`, { decision, confirmedKl: decision === 'REJECTED' ? null : confirmedKl }); setReviewed(decision !== 'REJECTED'); } catch(e:any){setError(e.message);} }
-  async function loadCams() { try { for(let n=0;n<30;n++){ const values=await api<any[]>(`/api/predictions/${predictionId}/explanations`); if(values.length===2){setCams(values);return;} await new Promise(resolve=>setTimeout(resolve,1000)); } throw new Error('Grad-CAM aún está procesándose; inténtelo nuevamente'); } catch(e:any){setError(e.message);} }
-  async function saveClinical() { try { if (Object.values(flags).some((v) => v === '')) throw new Error('Marque Sí o No en cada indicador clínico'); await post(`/api/observations/${ids.observationId}/clinical`, { painScore: pain === '' ? null : Number(pain), ...booleans(flags) }); setClinicalSaved(true); } catch(e:any){setError(e.message);} }
-  async function savePrior() { try { if (!prior.examDate || ['obesity','diabetes','hypertension','nicotineUse','traumaLowerExtremity'].some((key) => (prior as any)[key] === '')) throw new Error('Complete el antecedente'); await post(`/api/patients/${patient.id}/prior-exams`, { examDate: prior.examDate, confirmedKl: Number(prior.confirmedKl), painScore: prior.painScore === '' ? null : Number(prior.painScore), kneeSide: ids.kneeSide, ...booleans(prior as any) }); } catch(e:any){setError(e.message);} }
-  async function getRisk(kind: string) { try { setRisk({...risk,[kind]:await post(`/api/observations/${ids.observationId}/risks/${kind}`,{})}); } catch(e:any){setError(e.message);} }
-  async function report() { try { const value=await post<any>(`/api/episodes/${ids.episodeId}/reports`,{});setReportId(value.id);}catch(e:any){setError(e.message);} }
-  const flagFields = [['obesity','Obesidad'],['diabetes','Diabetes'],['hypertension','Hipertensión'],['nicotineUse','Consumo de nicotina'],['traumaLowerExtremity','Trauma de miembro inferior']] as const;
-  return <div className="flow">
-    <section className="card wide"><div className="section-title"><span>03</span><div><p className="eyebrow">Ensemble 50/50</p><h2>Clasificación KL</h2></div></div>
-      {!prediction ? <><button onClick={run} disabled={job && !['FAILED','SUCCEEDED'].includes(job.status)}>Ejecutar inferencia</button>{job && <p className="status">Estado: <strong>{job.status}</strong></p>}</> : <div className="prediction">
-        <div className="score"><small>KL estimado</small><strong>{prediction.predictedKl}</strong><span>Confianza {percent(prediction.confidence)}</span></div>
-        <div className="bars">{Object.entries(prediction.ensemble).map(([label,value])=><div key={label}><span>{label}</span><i><b style={{width:percent(value)}} /></i><em>{percent(value)}</em></div>)}</div>
-        <p className="notice">Revise todas las probabilidades y los mapas Grad-CAM. La confirmación médica es obligatoria antes de calcular riesgos.</p>
-        <div className="explanations"><button className="ghost" onClick={loadCams}>Mostrar Grad-CAM</button>{cams.map(cam=><figure key={cam.backbone}><img src={cam.dataUrl} alt={`Grad-CAM ${cam.backbone} para KL${cam.targetKl}`}/><figcaption>{cam.backbone} · objetivo KL{cam.targetKl}</figcaption></figure>)}</div>
-        <div className="review"><label>KL clínico<select value={confirmedKl} onChange={(e)=>setConfirmedKl(Number(e.target.value))}>{[0,1,2,3,4].map(v=><option key={v}>{v}</option>)}</select></label><button onClick={()=>review(confirmedKl===prediction.predictedKl?'CONFIRMED':'CORRECTED')}>Confirmar revisión</button><button className="danger" onClick={()=>review('REJECTED')}>Rechazar</button></div>
-      </div>}
-    </section>
-    {reviewed && <section className="card wide"><div className="section-title"><span>04</span><div><p className="eyebrow">Variables semánticas</p><h2>Clínica e historial</h2></div></div>
-      <div className="form-grid"><label>Dolor 0–10 (opcional)<input type="number" min="0" max="10" step="0.1" value={pain} onChange={(e)=>setPain(e.target.value)} placeholder="No disponible" /></label>{flagFields.map(([key,label])=><label key={key}>{label}<select value={flags[key]} onChange={(e)=>setFlags({...flags,[key]:e.target.value})}><option value="">Seleccione…</option><option value="true">Sí</option><option value="false">No</option></select></label>)}<button className="span" onClick={saveClinical}>Guardar clínica actual</button></div>
-      <details><summary>Agregar antecedente de la misma rodilla</summary><div className="form-grid compact"><label>Fecha<input type="date" value={prior.examDate} onChange={(e)=>setPrior({...prior,examDate:e.target.value})}/></label><label>KL confirmado<select value={prior.confirmedKl} onChange={(e)=>setPrior({...prior,confirmedKl:e.target.value})}>{[0,1,2,3,4].map(v=><option key={v}>{v}</option>)}</select></label><label>Dolor opcional<input type="number" min="0" max="10" value={prior.painScore} onChange={(e)=>setPrior({...prior,painScore:e.target.value})}/></label>{flagFields.map(([key,label])=><label key={key}>{label}<select value={(prior as any)[key]} onChange={(e)=>setPrior({...prior,[key]:e.target.value})}><option value="">Seleccione…</option><option value="true">Sí</option><option value="false">No</option></select></label>)}<button className="span" onClick={savePrior}>Guardar antecedente</button></div></details>
-    </section>}
-    {clinicalSaved && <section className="card wide"><div className="section-title"><span>05</span><div><p className="eyebrow">Resultados separados</p><h2>Riesgos experimentales</h2></div></div><div className="risk-grid"><Result title="Artroplastia · 24 meses" value={risk.arthroplasty} action={()=>getRisk('arthroplasty')} /><Result title="Progresión KL · 3–12 meses" value={risk.progression} action={()=>getRisk('progression')} /></div><p className="notice">Un tamiz positivo no es una indicación quirúrgica. Interprete cada modelo por separado.</p><button onClick={report}>Generar reporte borrador</button>{reportId && <a className="button-link" href={`/api/reports/${reportId}/download`}>Descargar PDF</a>}</section>}
-    {error && <p className="error floating">{error}<button onClick={()=>setError('')}>×</button></p>}
-  </div>;
+function AdminUsers({ notify }: { notify: Notify }) {
+  const [data, setData] = useState<Paged<AdminUser>>(); const [page, setPage] = useState(1); const [search, setSearch] = useState(''); const [editing, setEditing] = useState<AdminUser | null | undefined>(); const [confirm, setConfirm] = useState<AdminUser>();
+  const load = () => api<Paged<AdminUser>>(`/api/admin/users?page=${page}&search=${encodeURIComponent(search)}`).then(setData).catch((error) => notify(error.message, 'error'));
+  useEffect(() => { void load(); }, [page, search]);
+  async function toggle(user: AdminUser) { try { if (user.active) await api(`/api/admin/users/${user.id}`, { method: 'DELETE' }); else await post(`/api/admin/users/${user.id}/activate`, {}); notify(user.active ? 'Cuenta desactivada' : 'Cuenta activada', 'success'); setConfirm(undefined); void load(); } catch (error: any) { notify(error.message, 'error'); } }
+  async function resetMfa(user: AdminUser) { try { await post(`/api/admin/users/${user.id}/reset-mfa`, {}); notify('MFA restablecido y sesiones revocadas', 'success'); } catch (error: any) { notify(error.message, 'error'); } }
+  return <Page title="Médicos y usuarios" subtitle="Administre accesos, perfiles profesionales y seguridad." action={<button className="button primary" onClick={() => setEditing(null)}>+ Nuevo usuario</button>}><div className="toolbar"><input type="search" placeholder="Buscar por nombre, correo o especialidad" maxLength={100} value={search} onChange={(event) => { setSearch(event.target.value); setPage(1); }} /></div><section className="surface table-card">{!data ? <Spinner /> : data.items.length === 0 ? <Empty title="No hay usuarios" detail="Registre la primera cuenta desde el botón superior." /> : <><table><thead><tr><th>Usuario</th><th>Rol</th><th>Especialidad</th><th>Estado</th><th>Último acceso</th><th aria-label="Acciones" /></tr></thead><tbody>{data.items.map((user) => <tr key={user.id}><td data-label="Usuario"><b>{user.displayName}</b><small>{user.email}</small></td><td data-label="Rol">{user.role === 'ADMIN' ? 'Administrador' : 'Médico'}</td><td data-label="Especialidad">{user.specialty ?? '—'}</td><td data-label="Estado"><Badge tone={user.active ? 'success' : 'neutral'}>{user.active ? 'Activo' : 'Inactivo'}</Badge></td><td data-label="Último acceso">{formatDate(user.lastAccess)}</td><td className="row-actions"><button className="icon-button" onClick={() => setEditing(user)} title="Editar">Editar</button>{user.role === 'ADMIN' && <button className="icon-button" onClick={() => void resetMfa(user)} title="Restablecer MFA">MFA</button>}<button className="icon-button danger-text" onClick={() => setConfirm(user)}>{user.active ? 'Desactivar' : 'Activar'}</button></td></tr>)}</tbody></table><Pagination {...data} onPage={setPage} /></>}</section>{editing !== undefined && <UserForm initial={editing ?? undefined} onClose={() => setEditing(undefined)} onSaved={load} notify={notify} />}{confirm && <ConfirmModal title={confirm.active ? 'Desactivar cuenta' : 'Activar cuenta'} detail={`${confirm.displayName} ${confirm.active ? 'perderá acceso y sus sesiones serán cerradas.' : 'podrá volver a iniciar sesión.'}`} danger={confirm.active} onClose={() => setConfirm(undefined)} action={() => void toggle(confirm)} />}</Page>;
 }
 
-function Result({title,value,action}:{title:string;value:any;action:()=>void}) { return <article className="result"><h3>{title}</h3>{!value?<button onClick={action}>Calcular</button>:value.available===false?<p>{value.reason}</p>:<><strong>{percent(value.probability)}</strong><span>Umbral {percent(value.threshold)}</span><mark className={value.screen_positive?'positive':'negative'}>{value.screen_positive?'Tamiz positivo':'Tamiz negativo'}</mark><small>{value.warning}</small></>}</article>; }
+function AdminAudit() {
+  const [data, setData] = useState<Paged<any>>(); const [page, setPage] = useState(1); const [search, setSearch] = useState('');
+  useEffect(() => { void api<Paged<any>>(`/api/admin/audit?page=${page}&search=${encodeURIComponent(search)}`).then(setData); }, [page, search]);
+  return <Page title="Auditoría" subtitle="Registro inmutable de accesos, cambios y decisiones."><div className="toolbar"><input type="search" placeholder="Filtrar por actor, acción o entidad" value={search} onChange={(event) => { setSearch(event.target.value.slice(0, 100)); setPage(1); }} /></div><section className="surface table-card">{!data ? <Spinner /> : <><table><thead><tr><th>Fecha</th><th>Actor</th><th>Acción</th><th>Entidad</th><th>Detalle</th></tr></thead><tbody>{data.items.map((item) => <tr key={item.id}><td data-label="Fecha">{formatDate(item.occurredAt)}</td><td data-label="Actor">{item.actorName ?? 'Sistema'}</td><td data-label="Acción"><Badge tone="info">{item.action}</Badge></td><td data-label="Entidad">{item.entityType}</td><td data-label="Detalle"><small>{Object.keys(item.metadata ?? {}).join(', ') || '—'}</small></td></tr>)}</tbody></table><Pagination {...data} onPage={setPage} /></>}</section></Page>;
+}
+
+function AdminSettings({ notify }: { notify: Notify }) {
+  const [form, setForm] = useState({ organizationName: '', reportSubtitle: '', patientCodePrefix: 'OA' }); const [loaded, setLoaded] = useState(false);
+  useEffect(() => { void api<any[]>('/api/admin/settings').then((rows) => { const org = rows.find((item) => item.key === 'organization')?.value ?? {}; const code = rows.find((item) => item.key === 'patientCode')?.value ?? {}; setForm({ organizationName: org.name ?? '', reportSubtitle: org.reportSubtitle ?? '', patientCodePrefix: code.prefix ?? 'OA' }); setLoaded(true); }); }, []);
+  async function save(event: FormEvent) { event.preventDefault(); try { await api('/api/admin/settings', { method: 'PATCH', body: JSON.stringify(form) }); notify('Configuración actualizada', 'success'); } catch (error: any) { notify(error.message, 'error'); } }
+  if (!loaded) return <Spinner />;
+  return <Page title="Configuración" subtitle="Identidad institucional y reglas generales del entorno."><section className="surface settings-card"><form className="form-grid" onSubmit={save}><label>Nombre de la institución<input minLength={2} maxLength={100} value={form.organizationName} onChange={(event) => setForm({ ...form, organizationName: event.target.value.slice(0, 100) })} required /></label><label>Prefijo de historia clínica<input minLength={1} maxLength={8} pattern="[A-Za-z0-9]+" value={form.patientCodePrefix} onChange={(event) => setForm({ ...form, patientCodePrefix: event.target.value.toUpperCase().slice(0, 8) })} required /><small>Los nuevos códigos se generarán como {form.patientCodePrefix || 'OA'}-000001.</small></label><label className="span">Subtítulo del reporte<input minLength={2} maxLength={160} value={form.reportSubtitle} onChange={(event) => setForm({ ...form, reportSubtitle: event.target.value.slice(0, 160) })} required /></label><div className="alert info-alert span">Las claves de OpenRouter, PeruDevs y cifrado solo se administran como secretos del servidor y nunca se muestran aquí.</div><button className="button primary span">Guardar configuración</button></form></section></Page>;
+}
+
+function PatientForm({ initial, onClose, onSaved, notify }: { initial?: Patient; onClose: () => void; onSaved: (patient: Patient) => void; notify: Notify }) {
+  const [form, setForm] = useState({ dni: initial?.dni ?? '', names: initial?.names ?? '', surnames: initial?.surnames ?? '', birthDate: initial?.birthDate ?? '', sex: initial?.sex ?? '', phone: initial?.phone ?? '', email: initial?.email ?? '' }); const [looking, setLooking] = useState(false); const [busy, setBusy] = useState(false);
+  async function lookup() { setLooking(true); try { const value = await api<any>(`/api/patients/lookup-dni?dni=${form.dni}`); if (!value.found) notify('PeruDevs no encontró información; complete los campos manualmente', 'warning'); else { setForm({ ...form, names: value.names ?? '', surnames: value.surnames ?? '', birthDate: value.birthDate ?? '', sex: value.sex ?? '' }); notify('Datos encontrados; verifíquelos antes de guardar', 'success'); } } catch (error: any) { notify(error.message, 'error'); } finally { setLooking(false); } }
+  async function save(event: FormEvent) { event.preventDefault(); setBusy(true); try { const patient = await api<Patient>(initial ? `/api/patients/${initial.id}` : '/api/patients', { method: initial ? 'PATCH' : 'POST', body: JSON.stringify({ ...form, sex: form.sex || null, email: form.email || null }) }); notify(initial ? 'Paciente actualizado' : `Paciente registrado con HC ${patient.medicalRecordNumber}`, 'success'); onSaved(patient); onClose(); } catch (error: any) { notify(error.message, 'error'); } finally { setBusy(false); } }
+  return <Modal title={initial ? 'Editar paciente' : 'Registrar paciente'} onClose={onClose} wide><form className="form-grid" onSubmit={save}><label>DNI<div className="field-action"><input inputMode="numeric" minLength={8} maxLength={8} pattern="[0-9]{8}" value={form.dni} onChange={(event) => setForm({ ...form, dni: event.target.value.replace(/\D/g, '').slice(0, 8) })} required /><button type="button" className="button secondary" disabled={looking || form.dni.length !== 8} onClick={lookup}>{looking ? 'Consultando…' : 'Autocompletar'}</button></div></label><label>Nombres<input minLength={2} maxLength={80} value={form.names} onChange={(event) => setForm({ ...form, names: event.target.value.slice(0, 80) })} required /></label><label>Apellidos<input minLength={2} maxLength={80} value={form.surnames} onChange={(event) => setForm({ ...form, surnames: event.target.value.slice(0, 80) })} required /></label><label>Fecha de nacimiento<input type="date" max={today} value={form.birthDate} onChange={(event) => setForm({ ...form, birthDate: event.target.value })} required /></label><label>Sexo<select value={form.sex ?? ''} onChange={(event) => setForm({ ...form, sex: event.target.value as any })}><option value="">No registrado</option><option value="female">Femenino</option><option value="male">Masculino</option></select></label><label>Celular<input inputMode="numeric" minLength={9} maxLength={9} pattern="9[0-9]{8}" placeholder="9XXXXXXXX" value={form.phone} onChange={(event) => setForm({ ...form, phone: event.target.value.replace(/\D/g, '').slice(0, 9) })} required /></label><label>Correo opcional<input type="email" maxLength={254} value={form.email ?? ''} onChange={(event) => setForm({ ...form, email: event.target.value.slice(0, 254) })} /></label>{!initial && <div className="auto-code"><span>Historia clínica</span><b>Se generará automáticamente</b><small>No tendrá que escribir ni recordar una numeración manual.</small></div>}<div className="modal-actions span"><button type="button" className="button secondary" onClick={onClose}>Cancelar</button><button className="button primary" disabled={busy}>{busy ? 'Guardando…' : 'Guardar paciente'}</button></div></form></Modal>;
+}
+
+function ClinicianDashboard({ navigate }: { navigate: (route: Route) => void }) {
+  const [data, setData] = useState<any>(); useEffect(() => { void api('/api/patients/dashboard').then(setData); }, []); if (!data) return <Spinner />;
+  return <Page title="Buenos días" subtitle="Este es el estado de su actividad clínica."><div className="metric-grid four"><Metric label="Mis pacientes" value={data.patients} detail="Pacientes activos" /><Metric label="Estudios" value={data.studies} detail="Radiografías registradas" /><Metric label="Revisiones pendientes" value={data.pending} detail="Clasificaciones por confirmar" tone={data.pending ? 'metric-warning' : ''} /><Metric label="Reportes" value={data.reports} detail="Borradores generados" /></div><div className="quick-grid"><button onClick={() => navigate({ name: 'patients' })}><span>+</span><b>Registrar o buscar paciente</b><small>Inicie desde la ficha clínica.</small></button><button onClick={() => navigate({ name: 'reviews' })}><span>✓</span><b>Revisiones pendientes</b><small>Confirme resultados KL.</small></button><button onClick={() => navigate({ name: 'reports' })}><span>↗</span><b>Reportes recientes</b><small>Consulte borradores generados.</small></button></div></Page>;
+}
+
+function PatientsPage({ navigate, notify }: { navigate: (route: Route) => void; notify: Notify }) {
+  const [data, setData] = useState<Paged<Patient>>(); const [page, setPage] = useState(1); const [search, setSearch] = useState(''); const [modal, setModal] = useState(false);
+  const load = () => api<Paged<Patient>>(`/api/patients?page=${page}&search=${encodeURIComponent(search)}`).then(setData).catch((error) => notify(error.message, 'error'));
+  useEffect(() => { void load(); }, [page, search]);
+  return <Page title="Mis pacientes" subtitle="Solo se muestran los pacientes registrados bajo su responsabilidad." action={<button className="button primary" onClick={() => setModal(true)}>+ Registrar paciente</button>}><div className="toolbar"><input type="search" placeholder="Buscar por nombre, DNI o historia clínica" value={search} onChange={(event) => { setSearch(event.target.value.slice(0, 100)); setPage(1); }} /></div><section className="surface table-card">{!data ? <Spinner /> : data.items.length === 0 ? <Empty title="Aún no tiene pacientes" detail="Registre un paciente para comenzar un estudio." /> : <><table><thead><tr><th>Paciente</th><th>Historia clínica</th><th>DNI</th><th>Celular</th><th>Registro</th><th /></tr></thead><tbody>{data.items.map((patient) => <tr key={patient.id}><td data-label="Paciente"><b>{patient.surnames}, {patient.names}</b><small>{patient.email ?? 'Sin correo'}</small></td><td data-label="Historia clínica"><Badge tone="info">{patient.medicalRecordNumber}</Badge></td><td data-label="DNI">••••{patient.dni.slice(-4)}</td><td data-label="Celular">{patient.phone}</td><td data-label="Registro">{formatDate(patient.createdAt)}</td><td className="row-actions"><button className="button table-action" onClick={() => navigate({ name: 'patient', patientId: patient.id })}>Ver ficha</button></td></tr>)}</tbody></table><Pagination {...data} onPage={setPage} /></>}</section>{modal && <PatientForm onClose={() => setModal(false)} notify={notify} onSaved={(patient) => { void load(); navigate({ name: 'patient', patientId: patient.id }); }} />}</Page>;
+}
+
+function PatientDetail({ id, navigate, notify }: { id: string; navigate: (route: Route) => void; notify: Notify }) {
+  const [patient, setPatient] = useState<Patient>(); const [episodes, setEpisodes] = useState<any[]>([]); const [reports, setReports] = useState<any[]>([]); const [editing, setEditing] = useState(false); const [archiving, setArchiving] = useState(false);
+  const load = async () => { try { const [p, e, r] = await Promise.all([api<Patient>(`/api/patients/${id}`), api<any[]>(`/api/patients/${id}/episodes`), api<any[]>(`/api/patients/${id}/reports`)]); setPatient(p); setEpisodes(e); setReports(r); } catch (error: any) { notify(error.message, 'error'); } };
+  useEffect(() => { void load(); }, [id]); if (!patient) return <Spinner />;
+  async function archive() { try { await api(`/api/patients/${id}`, { method: 'DELETE' }); notify('Paciente archivado', 'success'); navigate({ name: 'patients' }); } catch (error: any) { notify(error.message, 'error'); } }
+  async function generate(episodeId: string, reportType: string) { try { const result = await post<any>(`/api/episodes/${episodeId}/reports`, { reportType }); notify('Reporte generado', 'success'); window.open(`/api/reports/${result.id}/download`, '_blank', 'noopener'); void load(); } catch (error: any) { notify(error.message, 'error'); } }
+  return <Page title={`${patient.surnames}, ${patient.names}`} subtitle={`${patient.medicalRecordNumber} · Médico responsable actual`} action={<div className="head-actions"><button className="button secondary" onClick={() => setEditing(true)}>Editar</button><button className="button primary" onClick={() => navigate({ name: 'analysis', patientId: id })}>+ Nuevo análisis</button><button className="button danger-soft" onClick={() => setArchiving(true)}>Archivar</button></div>}><div className="profile-grid"><section className="surface identity-card"><div className="avatar">{patient.names[0]}{patient.surnames[0]}</div><div><span className="overline">Datos personales</span><h2>{patient.names} {patient.surnames}</h2><dl><div><dt>DNI</dt><dd>{patient.dni}</dd></div><div><dt>Nacimiento</dt><dd>{formatDate(patient.birthDate)}</dd></div><div><dt>Sexo</dt><dd>{patient.sex === 'female' ? 'Femenino' : patient.sex === 'male' ? 'Masculino' : 'No registrado'}</dd></div><div><dt>Celular</dt><dd>{patient.phone}</dd></div><div><dt>Correo</dt><dd>{patient.email ?? 'No registrado'}</dd></div></dl></div></section><div className="mini-metrics"><Metric label="Episodios" value={patient.stats?.episodes ?? 0} detail="Consultas registradas" /><Metric label="Estudios" value={patient.stats?.studies ?? 0} detail="Radiografías" /><Metric label="Reportes" value={patient.stats?.reports ?? 0} detail="Borradores" /></div></div>
+    <section className="surface timeline-card"><div className="section-head"><div><span className="overline">Historia clínica</span><h2>Línea de tiempo</h2></div></div>{episodes.length === 0 ? <Empty title="Sin episodios" detail="Inicie un nuevo análisis para crear el primer episodio." /> : <div className="timeline">{episodes.map((episode) => <article key={episode.id}><i /><div><b>{formatDate(episode.openedAt)}</b><p>{episode.studyCount} estudio(s) · {episode.reportCount} reporte(s)</p></div><div className="row-actions"><button className="button table-action" disabled={!episode.studyCount} onClick={() => void generate(episode.id, 'EPISODE')}>PDF episodio</button><button className="button table-action" disabled={!episode.studyCount} onClick={() => void generate(episode.id, 'LONGITUDINAL')}>PDF longitudinal</button></div></article>)}</div>}</section>
+    {reports.length > 0 && <section className="surface report-card"><div className="section-head"><div><span className="overline">Documentos</span><h2>Últimos 10 reportes</h2></div></div><div className="report-list">{reports.map((report) => <article key={report.id}><div><Badge tone="info">{report.reportType === 'LONGITUDINAL' ? 'Longitudinal' : 'Episodio'}</Badge><b>Episodio del {formatDate(report.episodeDate)}</b><small>Generado {formatDate(report.generatedAt)}</small></div><a className="button table-action" href={`/api/reports/${report.id}/download`}>Descargar PDF</a></article>)}</div></section>}
+    {editing && <PatientForm initial={patient} onClose={() => setEditing(false)} notify={notify} onSaved={(updated) => { setPatient(updated); void load(); }} />}{archiving && <ConfirmModal title="Archivar paciente" detail="El paciente dejará de aparecer en su lista activa. Sus estudios y auditoría no se eliminarán." danger onClose={() => setArchiving(false)} action={() => void archive()} />}</Page>;
+}
+
+function SimplePagedPage({ kind, navigate }: { kind: 'studies' | 'reviews' | 'reports'; navigate: (route: Route) => void }) {
+  const [data, setData] = useState<Paged<any>>(); const [page, setPage] = useState(1); useEffect(() => { void api<Paged<any>>(`/api/${kind}?page=${page}`).then(setData); }, [kind, page]);
+  const title = kind === 'studies' ? 'Estudios' : kind === 'reviews' ? 'Revisiones clínicas' : 'Reportes'; const subtitle = kind === 'studies' ? 'Radiografías y estado de procesamiento.' : kind === 'reviews' ? 'Clasificaciones KL generadas y su decisión médica.' : 'Borradores del episodio y longitudinales.';
+  return <Page title={title} subtitle={subtitle}><section className="surface table-card">{!data ? <Spinner /> : data.items.length === 0 ? <Empty title={`Sin ${title.toLowerCase()}`} detail="Los nuevos registros aparecerán aquí." /> : <><table><thead><tr><th>Paciente</th><th>HC</th><th>Fecha</th><th>{kind === 'reviews' ? 'Resultado' : 'Tipo / estado'}</th><th /></tr></thead><tbody>{data.items.map((item) => <tr key={item.id}><td data-label="Paciente"><b>{item.patientName}</b></td><td data-label="HC">{item.medicalRecordNumber}</td><td data-label="Fecha">{formatDate(item.examDate ?? item.episodeDate ?? item.generatedAt)}</td><td data-label="Estado">{kind === 'reviews' ? <Badge tone={item.decision ? 'success' : 'warning'}>{item.decision ?? 'Pendiente'} · KL {item.confirmedKl ?? item.probabilities?.predictedKl}</Badge> : kind === 'reports' ? item.reportType : <Badge tone="info">{item.status}</Badge>}</td><td className="row-actions">{kind === 'reports' ? <a className="button table-action" href={`/api/reports/${item.id}/download`}>Descargar</a> : <button className="button table-action" onClick={() => navigate({ name: 'patient', patientId: item.patientId })}>Ver paciente</button>}</td></tr>)}</tbody></table><Pagination {...data} onPage={setPage} /></>}</section></Page>;
+}
+
+function Page({ title, subtitle, action, children }: { title: string; subtitle: string; action?: ReactNode; children: ReactNode }) { return <div className="page"><header className="page-head"><div><span className="overline">Panel OA</span><h1>{title}</h1><p>{subtitle}</p></div>{action}</header>{children}</div>; }
+
+function Shell({ user, onLogout, notify }: { user: User; onLogout: () => void; notify: Notify }) {
+  const [route, setRoute] = useState<Route>({ name: 'dashboard' }); const [collapsed, setCollapsed] = useState(false);
+  const nav = user.role === 'ADMIN' ? [['dashboard', 'Resumen', '⌂'], ['users', 'Médicos y usuarios', 'U'], ['audit', 'Auditoría', 'A'], ['settings', 'Configuración', '⚙']] : [['dashboard', 'Inicio', '⌂'], ['patients', 'Mis pacientes', 'P'], ['studies', 'Estudios', 'E'], ['reviews', 'Revisiones', 'R'], ['reports', 'Reportes', 'D']];
+  const content = useMemo(() => {
+    if (user.role === 'ADMIN') { if (route.name === 'users') return <AdminUsers notify={notify} />; if (route.name === 'audit') return <AdminAudit />; if (route.name === 'settings') return <AdminSettings notify={notify} />; return <AdminDashboard />; }
+    if (route.name === 'patients') return <PatientsPage navigate={setRoute} notify={notify} />;
+    if (route.name === 'patient' && route.patientId) return <PatientDetail id={route.patientId} navigate={setRoute} notify={notify} />;
+    if (route.name === 'analysis' && route.patientId) return <AnalysisLoader patientId={route.patientId} notify={notify} onDone={() => setRoute({ name: 'patient', patientId: route.patientId })} />;
+    if (['studies', 'reviews', 'reports'].includes(route.name)) return <SimplePagedPage kind={route.name as any} navigate={setRoute} />;
+    return <ClinicianDashboard navigate={setRoute} />;
+  }, [route, user.role]);
+  return <div className={`app-shell ${collapsed ? 'collapsed' : ''}`}><aside><div className="sidebar-brand"><div className="brand-symbol small">OA</div><div><b>OA Clínica</b><small>Plataforma experimental</small></div></div><nav>{nav.map(([name, label, icon]) => <button key={name} className={route.name === name || (name === 'patients' && ['patient', 'analysis'].includes(route.name)) ? 'active' : ''} onClick={() => setRoute({ name })}><i>{icon}</i><span>{label}</span></button>)}</nav><div className="sidebar-foot"><div className="user-chip"><div>{user.displayName.slice(0, 2).toUpperCase()}</div><span><b>{user.displayName}</b><small>{user.role === 'ADMIN' ? 'Administrador técnico' : 'Médico responsable'}</small></span></div><button className="nav-logout" onClick={onLogout}><i>↪</i><span>Cerrar sesión</span></button></div></aside><main className="main-area"><div className="topbar"><button className="menu-toggle" onClick={() => setCollapsed(!collapsed)}>☰</button><div className="topbar-status"><span className="status-dot" /> Servicios operativos</div></div><div className="content">{content}</div></main></div>;
+}
+
+function AnalysisLoader({ patientId, notify, onDone }: { patientId: string; notify: Notify; onDone: () => void }) { const [patient, setPatient] = useState<Patient>(); useEffect(() => { void api<Patient>(`/api/patients/${patientId}`).then(setPatient).catch((error) => notify(error.message, 'error')); }, [patientId]); return patient ? <ClinicalAnalysis patient={patient} notify={notify} onDone={onDone} /> : <Spinner />; }
 
 export default function App() {
-  const [user,setUser]=useState<User>(); const [patient,setPatient]=useState<Patient>(); const [ids,setIds]=useState<{episodeId:string;observationId:string;kneeSide:string}>();
-  useEffect(()=>{api<User>('/api/auth/me').then(setUser).catch(()=>undefined)},[]);
-  if(!user) return <Login onDone={setUser}/>;
-  return <><header><div className="wordmark"><b>OA</b><span>Clínica experimental</span></div><div><span>{user.displayName}</span><button className="ghost" onClick={async()=>{await post('/api/auth/logout',{});setUser(undefined)}}>Salir</button></div></header><main className="workspace"><div className="intro"><p className="eyebrow">Nuevo análisis</p><h1>Evaluación integral de rodilla</h1><p>Clasificación radiográfica, revisión clínica y riesgos longitudinales con trazabilidad completa.</p></div>{!patient?<PatientStep onSelect={setPatient}/>:!ids?<StudyStep patient={patient} onReady={setIds}/>:<ModelStep patient={patient} ids={ids}/>}</main><footer>Herramienta de investigación · Resultados sujetos a revisión médica · No usar como único fundamento diagnóstico</footer></>;
+  const [user, setUser] = useState<User>(); const [checking, setChecking] = useState(true); const [toasts, setToasts] = useState<Toast[]>([]);
+  useEffect(() => { void api<User>('/api/auth/me').then(setUser).catch(() => undefined).finally(() => setChecking(false)); }, []);
+  const notify: Notify = (message, tone = 'info') => { const id = Date.now() + Math.random(); setToasts((items) => [...items, { id, message, tone }]); window.setTimeout(() => setToasts((items) => items.filter((item) => item.id !== id)), 4500); };
+  async function logout() { await post('/api/auth/logout', {}); setUser(undefined); }
+  if (checking) return <div className="boot"><div className="brand-symbol">OA</div><Spinner /></div>;
+  return <>{user ? <Shell user={user} notify={notify} onLogout={() => void logout()} /> : <Login onDone={setUser} />}<div className="toast-stack" aria-live="polite">{toasts.map((toast) => <div key={toast.id} className={`toast toast-${toast.tone}`}><i />{toast.message}<button onClick={() => setToasts((items) => items.filter((item) => item.id !== toast.id))}>×</button></div>)}</div></>;
 }

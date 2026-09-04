@@ -5,7 +5,8 @@ Fecha de ejecución: 2026-09-04. El despliegue externo está fuera de esta etapa
 ## Resultado actual
 
 - `npm run typecheck`: aprobado para contratos, React y NestJS.
-- `npm test`: 2/2 pruebas NestJS aprobadas (AES-256-GCM/HMAC y vector RFC 6238 TOTP).
+- `npm test`: 3 suites y 8 pruebas NestJS aprobadas (validaciones, paginación,
+  AES-256-GCM/HMAC y vector RFC 6238 TOTP).
 - `npm run build`: aprobado para los bundles de producción web y API.
 - `docker compose build web-api ml-inference`: aprobado con imágenes CPU.
 - `docker compose up -d`: PostgreSQL, FastAPI y NestJS/React iniciados correctamente.
@@ -72,6 +73,17 @@ clínica o producción.
 - Compose reconstruido; PostgreSQL, FastAPI y `web-api` iniciaron sanos y la
   migración de prevalidación fue aplicada.
 
-El smoke test completo no se volvió a ejecutar porque el administrador local ya
-tiene MFA habilitado y no se proporcionó `SMOKE_TOTP_SECRET`. Se detuvo en el
-inicio de sesión, sin cambiar ni deshabilitar el MFA existente.
+El smoke test ahora utiliza exclusivamente una cuenta médica indicada mediante
+`SMOKE_CLINICIAN_EMAIL` y `SMOKE_CLINICIAN_PASSWORD`; nunca modifica ni
+deshabilita el MFA del administrador.
+
+## Panel por roles y reporte v2 — 2026-09-04
+
+- Acceso médico sin MFA local: HTTP 201 y cookies de sesión/CSRF correctas.
+- Un médico autenticado recibió HTTP 403 al consultar una ruta administrativa.
+- Listado paginado y filtrado por médico responsable: aprobado.
+- Reporte enriquecido por episodio: HTTP 200, firma `%PDF` y 599 010 bytes con
+  los recursos gráficos del estudio de prueba.
+- Migración de propiedad, perfiles, configuración y tipo de reporte: aplicada.
+- Limpieza solicitada: 6 pacientes, 23 assets, 6 reportes y 88 eventos de
+  auditoría eliminados; la cuenta administrativa original fue conservada.

@@ -1,9 +1,10 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
-import { AuthUser, CsrfGuard, CurrentUser, SessionGuard } from './auth';
+import { AuthUser, ClinicianGuard, CsrfGuard, CurrentUser, SessionGuard } from './auth';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { PAGE_SIZE, pageNumber } from './pagination';
 import { boundedNumber, isoDate, uuid } from './validation';
 
 type Flags = { obesity: boolean; diabetes: boolean; hypertension: boolean; nicotineUse: boolean; traumaLowerExtremity: boolean };
@@ -24,7 +25,7 @@ const validatePain = (value: unknown) => {
 const yearsAt = (birth: string, exam: string) => (Date.parse(exam) - Date.parse(birth)) / (365.25 * 86400_000);
 
 @Controller('api')
-@UseGuards(SessionGuard, CsrfGuard)
+@UseGuards(SessionGuard, CsrfGuard, ClinicianGuard)
 export class ClinicalController {
   constructor(
     private readonly db: DatabaseService, private readonly crypto: CryptoService,
@@ -41,9 +42,18 @@ export class ClinicalController {
     };
   }
 
+  private async ensureObservation(observationId: string, userId: string) {
+    const owned = await this.db.query(
+      `SELECT 1 FROM knee_observations k JOIN radiographic_studies s ON s.id=k.study_id JOIN clinical_episodes e ON e.id=s.episode_id
+       JOIN patients p ON p.id=e.patient_id WHERE k.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [observationId, userId],
+    );
+    if (!owned.rowCount) throw new BadRequestException('Observación no encontrada');
+  }
+
   @Post('observations/:id/clinical')
   async clinical(@Param('id') observationId: string, @Body() body: any, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
+    await this.ensureObservation(observationId, user.id);
     const flags = this.flags(body); const pain = validatePain(body.painScore);
     await this.db.query(
       `INSERT INTO clinical_observations(knee_observation_id,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,recorded_by)
@@ -60,6 +70,8 @@ export class ClinicalController {
   @Post('patients/:patientId/prior-exams')
   async prior(@Param('patientId') patientId: string, @Body() body: any, @CurrentUser() user: AuthUser) {
     patientId = uuid(patientId, 'Paciente');
+    const owned = await this.db.query('SELECT 1 FROM patients WHERE id=$1 AND owner_clinician_id=$2 AND archived_at IS NULL', [patientId, user.id]);
+    if (!owned.rowCount) throw new BadRequestException('Paciente no encontrado');
     const flags = this.flags(body); const pain = validatePain(body.painScore);
     if (!['L', 'R'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
     body.examDate = isoDate(body.examDate, 'Fecha del antecedente');
@@ -78,7 +90,7 @@ export class ClinicalController {
     return { id: result.rows[0].id };
   }
 
-  private async currentContext(observationId: string): Promise<ContextRow> {
+  private async currentContext(observationId: string, userId: string): Promise<ContextRow> {
     const result = await this.db.query<ContextRow>(
       `SELECT k.id observation_id,e.patient_id,e.id episode_id,s.exam_date,k.knee_side,r.confirmed_kl,c.pain_score,
        c.obesity,c.diabetes,c.hypertension,c.nicotine_use,c.trauma_lower_extremity,p.birth_date_cipher,p.sex_cipher
@@ -86,7 +98,7 @@ export class ClinicalController {
        JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id
        JOIN LATERAL (SELECT confirmed_kl,decision FROM clinician_reviews r JOIN model_predictions mp ON mp.id=r.prediction_id
          WHERE mp.observation_id=k.id ORDER BY reviewed_at DESC LIMIT 1) r ON r.decision<>'REJECTED'
-       JOIN clinical_observations c ON c.knee_observation_id=k.id WHERE k.id=$1`, [observationId],
+       JOIN clinical_observations c ON c.knee_observation_id=k.id WHERE k.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [observationId, userId],
     );
     if (!result.rows[0]) throw new BadRequestException('Se requiere revisión KL aceptada y datos clínicos completos');
     return result.rows[0];
@@ -112,12 +124,12 @@ export class ClinicalController {
   @Post('observations/:id/risks/arthroplasty')
   async arthroplasty(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
-    const current = await this.currentContext(observationId);
+    const current = await this.currentContext(observationId, user.id);
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
     const sex = current.sex_cipher ? this.crypto.decryptText(current.sex_cipher, `patient:${current.patient_id}:sex`) : null;
     const history = await this.db.query<{ exam_date: string; confirmed_kl: number; knee_side: 'L' | 'R' }>(
-      `SELECT exam_date,confirmed_kl,knee_side FROM prior_exams WHERE patient_id=$1 AND knee_side=$2 ORDER BY exam_date`,
-      [current.patient_id, current.knee_side],
+      `SELECT exam_date,confirmed_kl,knee_side FROM prior_exams WHERE patient_id=$1 AND knee_side=$2 AND exam_date<$3 ORDER BY exam_date`,
+      [current.patient_id, current.knee_side, current.exam_date],
     );
     const payload = {
       date_of_birth: birth, exam_date: current.exam_date, current_kl: current.confirmed_kl,
@@ -134,7 +146,7 @@ export class ClinicalController {
   @Post('observations/:id/risks/progression')
   async progression(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
-    const current = await this.currentContext(observationId);
+    const current = await this.currentContext(observationId, user.id);
     if (current.confirmed_kl === 4) return { available: false, reason: 'LSTM no disponible para t2 KL4' };
     const prior = (await this.db.query<any>(
       `SELECT * FROM prior_exams WHERE patient_id=$1 AND knee_side=$2 AND exam_date<$3 ORDER BY exam_date DESC LIMIT 1`,
@@ -170,59 +182,191 @@ export class ClinicalController {
     return inserted.rows[0].id;
   }
 
+  private async renderRadiograph(storageKey: string, contentType: string) {
+    const image = await this.assets.read(storageKey); const form = new FormData();
+    const bytes = image.buffer.slice(image.byteOffset, image.byteOffset + image.byteLength) as ArrayBuffer;
+    form.append('image', new Blob([bytes], { type: contentType }), 'radiograph');
+    const response = await fetch(`${process.env.ML_SERVICE_URL}/v1/images/render`, {
+      method: 'POST', body: form, signal: AbortSignal.timeout(30_000), headers: { 'x-service-token': process.env.SERVICE_TOKEN ?? '' },
+    });
+    if (!response.ok) return null;
+    const result = await response.json() as { preview_base64_png: string };
+    return Buffer.from(result.preview_base64_png, 'base64');
+  }
+
   @Post('episodes/:episodeId/reports')
-  async report(@Param('episodeId') episodeId: string, @CurrentUser() user: AuthUser) {
+  async report(@Param('episodeId') episodeId: string, @Body() body: { reportType?: string }, @CurrentUser() user: AuthUser) {
     episodeId = uuid(episodeId, 'Episodio');
-    const row = (await this.db.query<any>(
-      `SELECT e.patient_id,p.names_cipher,p.surnames_cipher,p.medical_record_cipher FROM clinical_episodes e
-       JOIN patients p ON p.id=e.patient_id WHERE e.id=$1`, [episodeId],
+    const reportType = body.reportType === 'LONGITUDINAL' ? 'LONGITUDINAL' : 'EPISODE';
+    const patient = (await this.db.query<any>(
+      `SELECT e.patient_id,e.opened_at,p.names_cipher,p.surnames_cipher,p.medical_record_cipher,p.dni_cipher,
+       p.birth_date_cipher,p.sex_cipher FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
+       WHERE e.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [episodeId, user.id],
     )).rows[0];
-    if (!row) throw new BadRequestException('Episodio no encontrado');
-    const predictions = (await this.db.query<any>(
-      `SELECT mp.model_name,mp.model_version,mp.probabilities,mp.threshold,mp.created_at,k.knee_side
-       FROM model_predictions mp JOIN knee_observations k ON k.id=mp.observation_id
-       JOIN radiographic_studies s ON s.id=k.study_id WHERE s.episode_id=$1 ORDER BY mp.created_at`, [episodeId],
+    if (!patient) throw new BadRequestException('Episodio no encontrado');
+    const studies = (await this.db.query<any>(
+      `SELECT s.id,s.exam_date,s.source_type,a.storage_key,a.content_type,k.id observation_id,k.knee_side,e.id episode_id
+       FROM radiographic_studies s JOIN stored_assets a ON a.id=s.asset_id JOIN knee_observations k ON k.study_id=s.id
+       JOIN clinical_episodes e ON e.id=s.episode_id WHERE e.patient_id=$1 AND ($2='LONGITUDINAL' OR e.id=$3)
+       ORDER BY s.exam_date,k.knee_side`, [patient.patient_id, reportType, episodeId],
     )).rows;
-    const patientName = `${this.crypto.decryptText(row.names_cipher, `patient:${row.patient_id}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patient_id}:surnames`)}`;
-    const mrn = this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patient_id}:mrn`);
-    const pdf = await this.makePdf(patientName, mrn, predictions, user.displayName);
+    if (!studies.length) throw new BadRequestException('No hay estudios para generar el reporte');
+    for (const study of studies) {
+      study.preview = await this.renderRadiograph(study.storage_key, study.content_type);
+      study.clinical = (await this.db.query<any>('SELECT * FROM clinical_observations WHERE knee_observation_id=$1', [study.observation_id])).rows[0] ?? null;
+      study.predictions = (await this.db.query<any>(
+        `SELECT mp.id,mp.model_name,mp.model_version,mp.probabilities,mp.threshold,mp.screen_positive,mp.created_at,
+         cr.decision,cr.confirmed_kl,cr.reason,cr.reviewed_at FROM model_predictions mp
+         LEFT JOIN LATERAL (SELECT * FROM clinician_reviews WHERE prediction_id=mp.id ORDER BY reviewed_at DESC LIMIT 1) cr ON true
+         WHERE mp.observation_id=$1 ORDER BY mp.created_at`, [study.observation_id],
+      )).rows;
+      const ensemble = study.predictions.find((item: any) => item.model_name === 'Ensemble-v2');
+      study.gradcams = ensemble ? await Promise.all((await this.db.query<{ backbone: string; target_kl: number; storage_key: string }>(
+        `SELECT g.backbone,g.target_kl,a.storage_key FROM gradcam_explanations g JOIN stored_assets a ON a.id=g.asset_id WHERE g.prediction_id=$1 ORDER BY g.backbone`, [ensemble.id],
+      )).rows.map(async (item) => ({ ...item, image: await this.assets.read(item.storage_key) }))) : [];
+    }
+    const history = (await this.db.query<any>('SELECT * FROM prior_exams WHERE patient_id=$1 ORDER BY exam_date', [patient.patient_id])).rows;
+    const organization = (await this.db.query<{ value: any }>("SELECT value FROM app_settings WHERE key='organization'")).rows[0]?.value ?? {};
+    const context = {
+      organization, reportType, episodeId, patientId: patient.patient_id, openedAt: patient.opened_at,
+      patientName: `${this.crypto.decryptText(patient.names_cipher, `patient:${patient.patient_id}:names`)} ${this.crypto.decryptText(patient.surnames_cipher, `patient:${patient.patient_id}:surnames`)}`,
+      mrn: this.crypto.decryptText(patient.medical_record_cipher, `patient:${patient.patient_id}:mrn`),
+      dni: this.crypto.decryptText(patient.dni_cipher, `patient:${patient.patient_id}:dni`),
+      birthDate: this.crypto.decryptText(patient.birth_date_cipher, `patient:${patient.patient_id}:birth`),
+      sex: patient.sex_cipher ? this.crypto.decryptText(patient.sex_cipher, `patient:${patient.patient_id}:sex`) : null,
+      clinician: user.displayName, studies, history,
+    };
+    const pdf = await this.makePdf(context);
     const stored = await this.assets.write(pdf);
     const asset = await this.db.query<{ id: string }>(
       `INSERT INTO stored_assets(patient_id,kind,storage_key,content_type,plaintext_sha256,size_bytes,created_by)
        VALUES($1,'REPORT',$2,'application/pdf',$3,$4,$5) RETURNING id`,
-      [row.patient_id, stored.storageKey, createHash('sha256').update(pdf).digest('hex'), pdf.length, user.id],
+      [patient.patient_id, stored.storageKey, createHash('sha256').update(pdf).digest('hex'), pdf.length, user.id],
     );
     const report = await this.db.query<{ id: string }>(
-      `INSERT INTO draft_reports(episode_id,asset_id,generated_by) VALUES($1,$2,$3) RETURNING id`,
-      [episodeId, asset.rows[0].id, user.id],
+      `INSERT INTO draft_reports(episode_id,asset_id,generated_by,report_type) VALUES($1,$2,$3,$4) RETURNING id`,
+      [episodeId, asset.rows[0].id, user.id, reportType],
     );
-    await this.audit.record(user.id, 'DRAFT_REPORT_GENERATED', 'DraftReport', report.rows[0].id);
-    return { id: report.rows[0].id, status: 'DRAFT' };
+    await this.audit.record(user.id, 'DRAFT_REPORT_GENERATED', 'DraftReport', report.rows[0].id, { reportType });
+    return { id: report.rows[0].id, status: 'DRAFT', reportType };
   }
 
-  private makePdf(patient: string, mrn: string, predictions: any[], clinician: string): Promise<Buffer> {
+  private makePdf(context: any): Promise<Buffer> {
     return new Promise((resolve, reject) => {
-      const document = new PDFDocument({ size: 'A4', margin: 50, info: { Title: 'Reporte borrador OA' } });
-      const chunks: Buffer[] = [];
+      const document = new PDFDocument({ size: 'A4', margin: 46, bufferPages: true, info: { Title: 'Reporte OA — borrador experimental' } });
+      const chunks: Buffer[] = []; const width = 503;
+      const ensure = (height: number) => { if (document.y + height > 760) document.addPage(); };
+      const heading = (title: string) => { ensure(42); document.moveDown(.7).fillColor('#173f3a').font('Helvetica-Bold').fontSize(13).text(title); document.moveDown(.35); };
+      const field = (label: string, value: unknown, x: number, y: number, w: number) => {
+        document.fillColor('#65736f').font('Helvetica').fontSize(7.5).text(label.toUpperCase(), x, y, { width: w });
+        document.fillColor('#18312e').font('Helvetica-Bold').fontSize(9.5).text(String(value ?? 'No disponible'), x, y + 11, { width: w });
+      };
       document.on('data', (chunk) => chunks.push(chunk)); document.on('error', reject);
       document.on('end', () => resolve(Buffer.concat(chunks)));
-      document.fontSize(18).text('Reporte borrador — evaluación experimental OA');
-      document.moveDown().fontSize(11).text(`Paciente: ${patient}`).text(`Historia clínica: ${mrn}`).text(`Generado por: ${clinician}`);
-      document.moveDown().fontSize(13).text('Resultados');
-      for (const item of predictions) {
-        document.fontSize(10).text(`${item.model_name} (${item.model_version}) — Rodilla ${item.knee_side}`);
-        document.fontSize(8).text(JSON.stringify(item.probabilities));
+      document.rect(0, 0, 595, 112).fill('#173f3a');
+      document.fillColor('#e7b75f').font('Helvetica-Bold').fontSize(11).text(String(context.organization.name ?? 'Clínica OA').toUpperCase(), 46, 32);
+      document.fillColor('#ffffff').fontSize(22).text(context.reportType === 'LONGITUDINAL' ? 'Reporte longitudinal' : 'Reporte del episodio', 46, 53);
+      document.font('Helvetica').fontSize(9).fillColor('#c5d7d2').text(context.organization.reportSubtitle ?? 'Evaluación experimental de osteoartritis', 46, 83);
+      document.roundedRect(465, 32, 82, 24, 4).fill('#f2dfb7').fillColor('#6b4b16').font('Helvetica-Bold').fontSize(8).text('BORRADOR', 478, 41);
+      document.y = 132;
+      field('Paciente', context.patientName, 46, 132, 245); field('Historia clínica', context.mrn, 310, 132, 120); field('DNI', context.dni, 447, 132, 100);
+      field('Nacimiento', context.birthDate, 46, 172, 145); field('Sexo', context.sex === 'female' ? 'Femenino' : context.sex === 'male' ? 'Masculino' : 'No registrado', 210, 172, 130); field('Médico responsable', context.clinician, 358, 172, 189);
+      document.y = 208;
+      for (const study of context.studies) {
+        ensure(260); heading(`Estudio ${String(study.exam_date).slice(0, 10)} · Rodilla ${study.knee_side === 'L' ? 'izquierda' : 'derecha'}`);
+        const blockY = document.y;
+        document.roundedRect(46, blockY, width, 190, 7).fillAndStroke('#f6f8f7', '#dce3df');
+        if (study.preview) { try { document.image(study.preview, 58, blockY + 12, { fit: [205, 166], align: 'center', valign: 'center' }); } catch { /* vista textual */ } }
+        document.fillColor('#65736f').font('Helvetica').fontSize(8).text(`Entrada: ${study.source_type}`, 280, blockY + 15, { width: 250 });
+        const ensemble = study.predictions.find((item: any) => item.model_name === 'Ensemble-v2');
+        if (ensemble) {
+          const values = ensemble.probabilities ?? {}; const confirmed = ensemble.confirmed_kl;
+          document.fillColor('#18312e').font('Helvetica-Bold').fontSize(12).text(`KL estimado: ${values.predictedKl ?? '—'}`, 280, blockY + 38);
+          document.fontSize(10).text(`KL clínico: ${confirmed ?? 'Pendiente de revisión'}`, 280, blockY + 57);
+          document.font('Helvetica').fontSize(8).fillColor('#65736f').text(`Confianza: ${values.confidence == null ? '—' : `${(Number(values.confidence) * 100).toFixed(1)} %`}`, 280, blockY + 75);
+          let y = blockY + 97;
+          for (let grade = 0; grade <= 4; grade += 1) {
+            const probability = Number(values.ensemble?.[`KL${grade}`] ?? 0);
+            document.fillColor('#40534f').fontSize(7).text(`KL${grade}`, 280, y + 1, { width: 25 });
+            document.roundedRect(310, y, 145, 7, 3).fill('#dfe7e3');
+            document.roundedRect(310, y, Math.max(1, 145 * probability), 7, 3).fill('#c5943d');
+            document.fillColor('#40534f').text(`${(probability * 100).toFixed(1)} %`, 465, y, { width: 55, align: 'right' }); y += 15;
+          }
+          const memberSummary = Object.entries(values.members ?? {}).map(([model, member]: [string, any]) => {
+            const probabilities = Object.entries(member ?? {}) as Array<[string, unknown]>;
+            const best = probabilities.reduce((current, candidate) => Number(candidate[1]) > Number(current[1]) ? candidate : current, ['—', 0] as [string, unknown]);
+            return `${model === 'resnet50' ? 'ResNet50' : model === 'densenet121' ? 'DenseNet121' : model}: ${best[0]} (${(Number(best[1]) * 100).toFixed(1)} %)`;
+          }).join(' · ');
+          if (memberSummary) document.fillColor('#65736f').font('Helvetica').fontSize(7).text(memberSummary, 280, blockY + 174, { width: 250 });
+        } else document.fillColor('#8b5c34').fontSize(9).text('Clasificación KL aún no ejecutada.', 280, blockY + 42);
+        document.y = blockY + 198;
+        if (study.clinical) {
+          const c = study.clinical; document.font('Helvetica').fillColor('#40534f').fontSize(8.5)
+            .text(`Dolor: ${c.pain_score ?? 'No disponible'}/10 · Obesidad: ${c.obesity ? 'Sí' : 'No'} · Diabetes: ${c.diabetes ? 'Sí' : 'No'} · Hipertensión: ${c.hypertension ? 'Sí' : 'No'} · Nicotina: ${c.nicotine_use ? 'Sí' : 'No'} · Trauma: ${c.trauma_lower_extremity ? 'Sí' : 'No'}`, { width });
+        }
+        for (const prediction of study.predictions.filter((item: any) => item.model_name !== 'Ensemble-v2')) {
+          ensure(56); const p = prediction.probabilities ?? {}; const name = prediction.model_name.startsWith('XGBoost') ? 'Riesgo de artroplastia · 24 meses' : 'Riesgo de progresión KL · 3–12 meses';
+          document.moveDown(.45).roundedRect(46, document.y, width, 42, 5).fill(prediction.screen_positive ? '#fbefd9' : '#e7f2ec');
+          const y = document.y + 11; document.fillColor('#18312e').font('Helvetica-Bold').fontSize(9).text(name, 58, y, { width: 300 });
+          document.fontSize(15).text(`${(Number(p.probability ?? 0) * 100).toFixed(1)} %`, 430, y - 2, { width: 100, align: 'right' }); document.y += 48;
+        }
+        if (study.gradcams.length) {
+          ensure(185); heading('Mapas de explicación Grad-CAM'); const y = document.y;
+          study.gradcams.slice(0, 2).forEach((cam: any, index: number) => { try { document.image(cam.image, 46 + index * 255, y, { fit: [238, 145] }); } catch { /* imagen incompatible */ } document.fillColor('#65736f').fontSize(8).text(`${cam.backbone} · objetivo KL${cam.target_kl}`, 46 + index * 255, y + 150, { width: 238, align: 'center' }); });
+          document.y = y + 170;
+        }
       }
-      document.moveDown().fontSize(10).fillColor('red').text('BORRADOR. Uso experimental. Requiere revisión médica. No es una indicación automática de cirugía.');
+      if (context.history.length) {
+        heading('Antecedentes longitudinales registrados');
+        for (const item of context.history) { ensure(20); document.fillColor('#40534f').font('Helvetica').fontSize(8.5).text(`${String(item.exam_date).slice(0, 10)} · Rodilla ${item.knee_side} · KL ${item.confirmed_kl} · Dolor ${item.pain_score ?? 'N/D'}`); }
+      }
+      ensure(70); document.moveDown().roundedRect(46, document.y, width, 54, 5).fill('#fbe9e7');
+      document.fillColor('#8b2e2e').font('Helvetica-Bold').fontSize(8.5).text('USO EXPERIMENTAL', 58, document.y + 11);
+      document.font('Helvetica').fontSize(8).text('Este documento requiere revisión médica. Los resultados no constituyen diagnóstico definitivo ni indicación automática de cirugía.', 58, document.y + 25, { width: 475 });
+      const pages = document.bufferedPageRange();
+      for (let index = pages.start; index < pages.start + pages.count; index += 1) {
+        document.switchToPage(index); document.fillColor('#7a8783').font('Helvetica').fontSize(7.5)
+          .text(`Reporte ${context.episodeId.slice(0, 8)} · Generado ${new Date().toISOString().slice(0, 10)} · Página ${index + 1} de ${pages.count}`, 46, 800, { width, align: 'center' });
+      }
       document.end();
     });
+  }
+
+  @Get('patients/:patientId/reports')
+  async reports(@Param('patientId') patientId: string, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente');
+    return (await this.db.query(
+      `SELECT r.id,r.report_type "reportType",r.status,r.generated_at "generatedAt",e.opened_at "episodeDate"
+       FROM draft_reports r JOIN clinical_episodes e ON e.id=r.episode_id JOIN patients p ON p.id=e.patient_id
+       WHERE p.id=$1 AND p.owner_clinician_id=$2 ORDER BY r.generated_at DESC LIMIT 10`, [patientId, user.id],
+    )).rows;
+  }
+
+  @Get('reports')
+  async allReports(@Query('page') pageValue: string | undefined, @CurrentUser() user: AuthUser) {
+    const requested = pageNumber(pageValue);
+    const total = Number((await this.db.query<{ count: string }>(
+      `SELECT count(*)::text count FROM draft_reports r JOIN clinical_episodes e ON e.id=r.episode_id
+       JOIN patients p ON p.id=e.patient_id WHERE p.owner_clinician_id=$1`, [user.id],
+    )).rows[0].count); const pages = Math.max(1, Math.ceil(total / PAGE_SIZE)); const page = Math.min(requested, pages);
+    const rows = (await this.db.query<any>(
+      `SELECT r.id,r.report_type "reportType",r.status,r.generated_at "generatedAt",e.opened_at "episodeDate",p.id "patientId",
+       p.names_cipher,p.surnames_cipher,p.medical_record_cipher FROM draft_reports r JOIN clinical_episodes e ON e.id=r.episode_id
+       JOIN patients p ON p.id=e.patient_id WHERE p.owner_clinician_id=$1 ORDER BY r.generated_at DESC
+       LIMIT ${PAGE_SIZE} OFFSET ${(page - 1) * PAGE_SIZE}`, [user.id],
+    )).rows.map((row) => ({ id: row.id, reportType: row.reportType, status: row.status, generatedAt: row.generatedAt,
+      episodeDate: row.episodeDate, patientId: row.patientId,
+      patientName: `${this.crypto.decryptText(row.names_cipher, `patient:${row.patientId}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patientId}:surnames`)}`,
+      medicalRecordNumber: this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patientId}:mrn`) }));
+    return { items: rows, page, pageSize: PAGE_SIZE, total, pages };
   }
 
   @Get('reports/:id/download')
   async download(@Param('id') id: string, @CurrentUser() user: AuthUser, @Res() response: Response) {
     id = uuid(id, 'Reporte');
     const row = (await this.db.query<{ storage_key: string }>(
-      `SELECT a.storage_key FROM draft_reports r JOIN stored_assets a ON a.id=r.asset_id WHERE r.id=$1`, [id],
+      `SELECT a.storage_key FROM draft_reports r JOIN stored_assets a ON a.id=r.asset_id JOIN clinical_episodes e ON e.id=r.episode_id
+       JOIN patients p ON p.id=e.patient_id WHERE r.id=$1 AND p.owner_clinician_id=$2`, [id, user.id],
     )).rows[0];
     if (!row) throw new BadRequestException('Reporte no encontrado');
     const pdf = await this.assets.read(row.storage_key);

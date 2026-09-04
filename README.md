@@ -35,6 +35,16 @@ la comprobación SHA-256 antes de iniciar inferencia.
 
 5. Abra `http://localhost:3000`.
 
+La aplicación tiene dos espacios separados:
+
+- **Administrador técnico:** dashboard operativo, CRUD de usuarios y médicos,
+  auditoría y configuración. No puede consultar pacientes ni estudios.
+- **Médico:** dashboard clínico, pacientes propios, estudios, revisiones y
+  reportes. Cada paciente pertenece exclusivamente al médico que lo registra.
+
+La historia clínica interna se genera de forma correlativa (`OA-000001`) y se
+almacena cifrada. El médico no debe escribirla manualmente.
+
 ### Servicios opcionales de automatización
 
 El formulario puede completar nombres, apellidos, sexo y nacimiento mediante
@@ -71,7 +81,7 @@ docker compose start
 
 ## Verificación local
 
-El smoke test automatizado recorre autenticación, paciente sintético, revisión
+El smoke test automatizado recorre autenticación médica, paciente sintético, revisión
 visual de carga PNG,
 CNN, Grad-CAM, revisión clínica, XGBoost, LSTM y reporte PDF:
 
@@ -79,10 +89,23 @@ CNN, Grad-CAM, revisión clínica, XGBoost, LSTM y reporte PDF:
 node scripts/smoke-test.mjs
 ```
 
-En entorno `local`, si el script tuvo que enrolar MFA, lo deja nuevamente
-pendiente para que el propietario configure su propio autenticador. Para las
-pruebas Python con los modelos reales se usa el objetivo Docker `test`; consulte
+Antes de ejecutarlo, cree desde el panel administrativo una cuenta médica
+exclusiva para pruebas y configure en `.env`:
+
+```text
+SMOKE_CLINICIAN_EMAIL=medico-pruebas@example.invalid
+SMOKE_CLINICIAN_PASSWORD=una-contraseña-de-pruebas
+```
+
+En local, el MFA es obligatorio para administradores y está temporalmente
+deshabilitado para médicos mediante `CLINICIAN_MFA_REQUIRED=false`.
+
+Para las pruebas Python con los modelos reales se usa el objetivo Docker `test`; consulte
 `docs/VERIFICATION.md` para los comandos y los resultados registrados.
+
+Los reportes permiten alcance por episodio o longitudinal e incluyen la vista
+de la radiografía, clasificación KL, probabilidades, revisión médica, contexto
+clínico, riesgos y mapas Grad-CAM disponibles.
 
 El perfil NVIDIA local requiere NVIDIA Container Toolkit. Configure
 `ML_SERVICE_URL=http://ml-inference-gpu:8000` y ejecute

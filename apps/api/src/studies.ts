@@ -1,11 +1,12 @@
 import {
   BadRequestException, Body, Controller, Get, Injectable, Logger, OnModuleDestroy, OnModuleInit,
-  Param, Post, UploadedFile, UseGuards, UseInterceptors,
+  Param, Post, Query, UploadedFile, UseGuards, UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { createHash, randomUUID } from 'node:crypto';
-import { AuthUser, CsrfGuard, CurrentUser, SessionGuard } from './auth';
+import { AuthUser, ClinicianGuard, CsrfGuard, CurrentUser, SessionGuard } from './auth';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { PAGE_SIZE, pageNumber } from './pagination';
 import { boundedNumber, isoDate, optionalText, text, uuid } from './validation';
 
 const SOURCE_TYPES = ['DICOM_BILATERAL', 'RASTER_BILATERAL', 'RASTER_SINGLE_ROI'] as const;
@@ -160,13 +161,53 @@ export class InferenceWorker implements OnModuleInit, OnModuleDestroy {
 }
 
 @Controller('api')
-@UseGuards(SessionGuard, CsrfGuard)
+@UseGuards(SessionGuard, CsrfGuard, ClinicianGuard)
 export class StudiesController {
   private readonly preflightWindows = new Map<string, { count: number; reset: number }>();
   constructor(
     private readonly db: DatabaseService, private readonly assets: AssetService,
     private readonly crypto: CryptoService, private readonly audit: AuditService,
   ) {}
+
+  @Get('studies')
+  async studies(@Query('page') pageValue: string | undefined, @CurrentUser() user: AuthUser) {
+    const page = pageNumber(pageValue); const total = Number((await this.db.query<{ count: string }>(
+      `SELECT count(*)::text count FROM radiographic_studies s JOIN clinical_episodes e ON e.id=s.episode_id
+       JOIN patients p ON p.id=e.patient_id WHERE p.owner_clinician_id=$1`, [user.id],
+    )).rows[0].count); const pages = Math.max(1, Math.ceil(total / PAGE_SIZE)); const current = Math.min(page, pages);
+    const rows = (await this.db.query<any>(
+      `SELECT s.id,s.exam_date "examDate",s.source_type "sourceType",s.created_at "createdAt",e.id "episodeId",
+       p.id "patientId",p.names_cipher,p.surnames_cipher,p.medical_record_cipher,
+       string_agg(DISTINCT k.knee_side,'') "kneeSides",max(j.status) FILTER(WHERE j.job_type='KL') status
+       FROM radiographic_studies s JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id
+       JOIN knee_observations k ON k.study_id=s.id LEFT JOIN inference_jobs j ON j.observation_id=k.id
+       WHERE p.owner_clinician_id=$1 GROUP BY s.id,e.id,p.id ORDER BY s.exam_date DESC LIMIT ${PAGE_SIZE} OFFSET ${(current - 1) * PAGE_SIZE}`, [user.id],
+    )).rows.map((row) => ({ id: row.id, examDate: row.examDate, sourceType: row.sourceType, createdAt: row.createdAt,
+      episodeId: row.episodeId, patientId: row.patientId, kneeSides: row.kneeSides, status: row.status ?? 'PENDING',
+      patientName: `${this.crypto.decryptText(row.names_cipher, `patient:${row.patientId}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patientId}:surnames`)}`,
+      medicalRecordNumber: this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patientId}:mrn`) }));
+    return { items: rows, page: current, pageSize: PAGE_SIZE, total, pages };
+  }
+
+  @Get('reviews')
+  async reviews(@Query('page') pageValue: string | undefined, @CurrentUser() user: AuthUser) {
+    const page = pageNumber(pageValue);
+    const joins = `FROM model_predictions mp JOIN knee_observations k ON k.id=mp.observation_id JOIN radiographic_studies s ON s.id=k.study_id
+      JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id`;
+    const filter = `WHERE mp.model_name='Ensemble-v2' AND p.owner_clinician_id=$1`;
+    const total = Number((await this.db.query<{ count: string }>(`SELECT count(*)::text count ${joins} ${filter}`, [user.id])).rows[0].count);
+    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE)); const current = Math.min(page, pages);
+    const rows = (await this.db.query<any>(
+      `SELECT mp.id,mp.created_at "createdAt",mp.probabilities,k.knee_side "kneeSide",s.exam_date "examDate",p.id "patientId",
+       p.names_cipher,p.surnames_cipher,p.medical_record_cipher,cr.decision,cr.confirmed_kl "confirmedKl",cr.reviewed_at "reviewedAt" ${joins}
+       LEFT JOIN LATERAL (SELECT * FROM clinician_reviews WHERE prediction_id=mp.id ORDER BY reviewed_at DESC LIMIT 1) cr ON true
+       ${filter} ORDER BY mp.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${(current - 1) * PAGE_SIZE}`, [user.id],
+    )).rows.map((row) => ({ id: row.id, createdAt: row.createdAt, probabilities: row.probabilities, kneeSide: row.kneeSide,
+      examDate: row.examDate, patientId: row.patientId, decision: row.decision, confirmedKl: row.confirmedKl, reviewedAt: row.reviewedAt,
+      patientName: `${this.crypto.decryptText(row.names_cipher, `patient:${row.patientId}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patientId}:surnames`)}`,
+      medicalRecordNumber: this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patientId}:mrn`) }));
+    return { items: rows, page: current, pageSize: PAGE_SIZE, total, pages };
+  }
 
   @Post('studies/preflight')
   @UseInterceptors(FileInterceptor('image', { limits: { fileSize: 64 * 1024 * 1024, files: 1 } }))
@@ -258,7 +299,10 @@ export class StudiesController {
     if (preflight.review_status === 'REJECTED' && (!overrideReason || overrideReason.length < 20)) {
       throw new BadRequestException('La revisión automática rechazó el archivo; se requiere un motivo clínico de al menos 20 caracteres');
     }
-    const episode = (await this.db.query<{ patient_id: string }>('SELECT patient_id FROM clinical_episodes WHERE id=$1 AND status=\'OPEN\'', [episodeId])).rows[0];
+    const episode = (await this.db.query<{ patient_id: string }>(
+      `SELECT e.patient_id FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
+       WHERE e.id=$1 AND e.status='OPEN' AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [episodeId, user.id],
+    )).rows[0];
     if (!episode) throw new BadRequestException('Episodio no encontrado o cerrado');
     const confirmation = { projection: true, weight: true, orientation: true };
     const stored = await this.assets.write(image.buffer);
@@ -291,6 +335,11 @@ export class StudiesController {
   @Post('observations/:observationId/inference')
   async queue(@Param('observationId') observationId: string, @Body() body: { idempotencyKey?: string }, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
+    const owned = await this.db.query(
+      `SELECT 1 FROM knee_observations k JOIN radiographic_studies s ON s.id=k.study_id JOIN clinical_episodes e ON e.id=s.episode_id
+       JOIN patients p ON p.id=e.patient_id WHERE k.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [observationId, user.id],
+    );
+    if (!owned.rowCount) throw new BadRequestException('Observación no encontrada');
     const suppliedKey = optionalText(body.idempotencyKey, 'Clave de idempotencia', 80) ?? 'default';
     if (!/^[A-Za-z0-9._:-]+$/.test(suppliedKey)) throw new BadRequestException('Clave de idempotencia inválida');
     const key = `kl:${observationId}:${suppliedKey}`;
@@ -305,13 +354,15 @@ export class StudiesController {
   }
 
   @Get('inference-jobs/:id')
-  async job(@Param('id') id: string) {
+  async job(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     id = uuid(id, 'Trabajo');
     const result = await this.db.query(
       `SELECT j.id,j.status,j.job_type "jobType",j.error_code "errorCode",j.correlation_id "correlationId",
        p.id "predictionId",p.probabilities,p.model_version "modelVersion",p.artifact_hashes "artifactHashes",
        p.latency_ms "latencyMs",p.device
-       FROM inference_jobs j LEFT JOIN model_predictions p ON p.job_id=j.id WHERE j.id=$1`, [id],
+       FROM inference_jobs j JOIN knee_observations k ON k.id=j.observation_id JOIN radiographic_studies s ON s.id=k.study_id
+       JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients owner ON owner.id=e.patient_id
+       LEFT JOIN model_predictions p ON p.job_id=j.id WHERE j.id=$1 AND owner.owner_clinician_id=$2`, [id, user.id],
     );
     if (!result.rows[0]) throw new BadRequestException('Trabajo no encontrado');
     return result.rows[0];
@@ -324,6 +375,11 @@ export class StudiesController {
     const rejected = body.decision === 'REJECTED';
     if (!rejected) boundedNumber(body.confirmedKl, 'KL confirmado', 0, 4, true);
     const reason = optionalText(body.reason, 'Motivo de revisión', 1000);
+    const owned = await this.db.query(
+      `SELECT 1 FROM model_predictions mp JOIN knee_observations k ON k.id=mp.observation_id JOIN radiographic_studies s ON s.id=k.study_id
+       JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id WHERE mp.id=$1 AND p.owner_clinician_id=$2`, [predictionId, user.id],
+    );
+    if (!owned.rowCount) throw new BadRequestException('Predicción KL no encontrada');
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO clinician_reviews(prediction_id,decision,confirmed_kl,reason,reviewed_by)
        SELECT id,$2,$3,$4,$5 FROM model_predictions WHERE id=$1 AND model_name='Ensemble-v2' RETURNING id`,
@@ -335,11 +391,13 @@ export class StudiesController {
   }
 
   @Get('predictions/:id/explanations')
-  async explanations(@Param('id') predictionId: string) {
+  async explanations(@Param('id') predictionId: string, @CurrentUser() user: AuthUser) {
     predictionId = uuid(predictionId, 'Predicción');
     const result = await this.db.query<{ id: string; backbone: string; target_kl: number; storage_key: string }>(
-      `SELECT g.id,g.backbone,g.target_kl,a.storage_key FROM gradcam_explanations g
-       JOIN stored_assets a ON a.id=g.asset_id WHERE g.prediction_id=$1 ORDER BY g.backbone`, [predictionId],
+      `SELECT g.id,g.backbone,g.target_kl,a.storage_key FROM gradcam_explanations g JOIN stored_assets a ON a.id=g.asset_id
+       JOIN model_predictions mp ON mp.id=g.prediction_id JOIN knee_observations k ON k.id=mp.observation_id
+       JOIN radiographic_studies s ON s.id=k.study_id JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id
+       WHERE g.prediction_id=$1 AND p.owner_clinician_id=$2 ORDER BY g.backbone`, [predictionId, user.id],
     );
     return Promise.all(result.rows.map(async (item) => ({
       id: item.id, backbone: item.backbone, targetKl: item.target_kl,

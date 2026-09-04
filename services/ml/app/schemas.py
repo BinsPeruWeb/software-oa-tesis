@@ -40,6 +40,12 @@ class ImagePreflightResponse(StrictModel):
     external_preview_borders_masked: bool
 
 
+class ImageRenderResponse(StrictModel):
+    input_hash: str
+    file_kind: Literal["DICOM", "RASTER"]
+    preview_base64_png: str
+
+
 class Sex(StrEnum):
     FEMALE = "female"
     MALE = "male"

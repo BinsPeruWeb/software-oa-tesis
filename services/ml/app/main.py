@@ -26,6 +26,7 @@ from .schemas import (
     ArthroplastyRequest,
     ExplanationResponse,
     ImagePreflightResponse,
+    ImageRenderResponse,
     ImageSourceType,
     KlResponse,
     KneeSide,
@@ -205,6 +206,17 @@ async def image_preflight(image: UploadFile = File(...)):
         "cost_usd": vision.cost,
         "external_preview_metadata_stripped": True,
         "external_preview_borders_masked": True,
+    }
+
+
+@app.post("/v1/images/render", response_model=ImageRenderResponse, dependencies=[Depends(authorize)])
+async def image_render(image: UploadFile = File(...)):
+    content = await read_limited(image)
+    detected = detect_image(content)
+    return {
+        "input_hash": detected.input_hash,
+        "file_kind": detected.file_kind,
+        "preview_base64_png": base64.b64encode(detected.preview_png).decode("ascii"),
     }
 
 

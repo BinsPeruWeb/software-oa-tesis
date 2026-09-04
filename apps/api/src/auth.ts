@@ -91,6 +91,15 @@ export class AdminGuard implements CanActivate {
 }
 
 @Injectable()
+export class ClinicianGuard implements CanActivate {
+  canActivate(context: ExecutionContext) {
+    const user = context.switchToHttp().getRequest<Request & { user: AuthUser }>().user;
+    if (user?.role !== 'CLINICIAN') throw new ForbiddenException('Rol médico requerido');
+    return true;
+  }
+}
+
+@Injectable()
 export class AuthService implements OnModuleInit {
   constructor(
     private readonly db: DatabaseService,
@@ -102,7 +111,8 @@ export class AuthService implements OnModuleInit {
   async onModuleInit() {
     const email = process.env.BOOTSTRAP_ADMIN_EMAIL?.trim().toLowerCase();
     const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
-    if (!email || !password || password.length < 14) throw new Error('Credenciales bootstrap inválidas');
+    const local = process.env.DEPLOYMENT_ENV === 'local';
+    if (!email || !password || password.length < (local ? 8 : 14)) throw new Error('Credenciales bootstrap inválidas');
     const exists = await this.db.query('SELECT id FROM users WHERE email=$1', [email]);
     if (!exists.rowCount) {
       const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
@@ -110,7 +120,19 @@ export class AuthService implements OnModuleInit {
         `INSERT INTO users(email,display_name,password_hash,role_code) VALUES($1,'Administrador técnico',$2,'ADMIN')`,
         [email, hash],
       );
+    } else if (local && process.env.RESET_BOOTSTRAP_ADMIN_PASSWORD === 'true') {
+      const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
+      await this.db.query('UPDATE users SET password_hash=$2,failed_attempts=0,locked_until=NULL,updated_at=now() WHERE email=$1 AND role_code=\'ADMIN\'', [email, hash]);
     }
+  }
+
+  private async issueSession(user: UserRow) {
+    const session = await this.db.query<{ id: string }>(
+      `INSERT INTO sessions(user_id,expires_at) VALUES($1,now()+interval '8 hours') RETURNING id`, [user.id],
+    );
+    const sessionId = session.rows[0].id;
+    const token = await this.jwt.signAsync({ sub: user.id, sid: sessionId, scope: 'session' }, { expiresIn: '8h' });
+    return { token, csrf: randomBytes(32).toString('base64url'), sessionId };
   }
 
   async login(email: string, password: string) {
@@ -124,6 +146,11 @@ export class AuthService implements OnModuleInit {
       throw new UnauthorizedException('Credenciales inválidas');
     }
     await this.db.query('UPDATE users SET failed_attempts=0,locked_until=NULL WHERE id=$1', [user.id]);
+    if (user.role_code === 'CLINICIAN' && process.env.CLINICIAN_MFA_REQUIRED !== 'true') {
+      const session = await this.issueSession(user);
+      await this.audit.record(user.id, 'AUTH_CLINICIAN_OK', 'Session', session.sessionId, { mfa: false });
+      return { authenticated: true as const, ...session };
+    }
     let credential = (await this.db.query<{ secret_cipher: Buffer; enabled: boolean }>('SELECT * FROM mfa_credentials WHERE user_id=$1', [user.id])).rows[0];
     let enrollment: { secret: string; otpauthUrl: string } | undefined;
     if (!credential) {
@@ -153,13 +180,9 @@ export class AuthService implements OnModuleInit {
     const secret = this.crypto.decryptText(user.secret_cipher, `mfa:${user.id}`);
     if (!checkTotp(code, secret)) throw new UnauthorizedException('Código TOTP inválido');
     await this.db.query('UPDATE mfa_credentials SET enabled=true,verified_at=COALESCE(verified_at,now()) WHERE user_id=$1', [user.id]);
-    const session = await this.db.query<{ id: string }>(
-      `INSERT INTO sessions(user_id,expires_at) VALUES($1,now()+interval '8 hours') RETURNING id`, [user.id],
-    );
-    const sessionId = session.rows[0].id;
-    const token = await this.jwt.signAsync({ sub: user.id, sid: sessionId, scope: 'session' }, { expiresIn: '8h' });
-    await this.audit.record(user.id, 'AUTH_MFA_OK', 'Session', sessionId);
-    return { token, csrf: randomBytes(32).toString('base64url') };
+    const session = await this.issueSession(user);
+    await this.audit.record(user.id, 'AUTH_MFA_OK', 'Session', session.sessionId);
+    return session;
   }
 }
 
@@ -168,9 +191,20 @@ export class AuthController {
   constructor(private readonly service: AuthService, private readonly db: DatabaseService, private readonly audit: AuditService) {}
 
   @Post('login')
-  login(@Body() body: { email?: string; password?: string }) {
+  async login(@Body() body: { email?: string; password?: string }, @Res({ passthrough: true }) response: Response) {
     if (!body.password || body.password.length > 128) throw new UnauthorizedException('Credenciales requeridas');
-    return this.service.login(validatedEmail(body.email, true)!, body.password);
+    const result = await this.service.login(validatedEmail(body.email, true)!, body.password);
+    if ('authenticated' in result) {
+      this.setSessionCookies(response, result.token, result.csrf);
+      return { authenticated: true };
+    }
+    return result;
+  }
+
+  private setSessionCookies(response: Response, token: string, csrf: string) {
+    const secure = process.env.COOKIE_SECURE !== 'false';
+    response.cookie('oa_session', token, { httpOnly: true, secure, sameSite: 'strict', maxAge: 8 * 3600_000, path: '/' });
+    response.cookie('oa_csrf', csrf, { httpOnly: false, secure, sameSite: 'strict', maxAge: 8 * 3600_000, path: '/' });
   }
 
   @Post('mfa/verify')
@@ -179,9 +213,7 @@ export class AuthController {
       throw new UnauthorizedException('Desafío y código requeridos');
     }
     const result = await this.service.verifyMfa(body.challengeToken, body.code);
-    const secure = process.env.COOKIE_SECURE !== 'false';
-    response.cookie('oa_session', result.token, { httpOnly: true, secure, sameSite: 'strict', maxAge: 8 * 3600_000, path: '/' });
-    response.cookie('oa_csrf', result.csrf, { httpOnly: false, secure, sameSite: 'strict', maxAge: 8 * 3600_000, path: '/' });
+    this.setSessionCookies(response, result.token, result.csrf);
     return { authenticated: true };
   }
 

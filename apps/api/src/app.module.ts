@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { AdminController } from './admin';
-import { AdminGuard, AuthController, AuthService, CsrfGuard, SessionGuard } from './auth';
+import { AdminGuard, AuthController, AuthService, ClinicianGuard, CsrfGuard, SessionGuard } from './auth';
 import { ClinicalController } from './clinical';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
 import { PeruDevsService } from './identity';
@@ -13,7 +13,7 @@ import { InferenceWorker, StudiesController } from './studies';
   controllers: [AuthController, PatientsController, StudiesController, ClinicalController, AdminController],
   providers: [
     DatabaseService, CryptoService, AssetService, AuditService,
-    AuthService, SessionGuard, CsrfGuard, AdminGuard,
+    AuthService, SessionGuard, CsrfGuard, AdminGuard, ClinicianGuard,
     PatientsService, PeruDevsService, InferenceWorker,
   ],
 })
