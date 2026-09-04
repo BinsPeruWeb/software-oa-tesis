@@ -251,7 +251,246 @@ PREDICCIÓN
 Todo el recorrido relevante queda registrado en AUDITORÍA (audit_events).
 
 
-10. ARCHIVOS DE REFERENCIA
+10. TABLAS MAESTRAS Y TABLAS DETALLE
+------------------------------------
+
+Una tabla maestra representa el registro principal de un grupo de información.
+Una tabla detalle contiene datos que dependen de ese registro principal.
+
+Ejemplo simple:
+
+  patients es la tabla maestra del paciente.
+  clinical_episodes es una tabla detalle porque cada episodio pertenece a un
+  paciente.
+
+Una misma tabla puede ser detalle en una relación y maestra en la siguiente.
+Por ejemplo, clinical_episodes es detalle de patients, pero es maestra de
+radiographic_studies.
+
+
+10.1 MAESTRO: roles
+-------------------
+
+Detalle: users
+Relación: roles.code -> users.role_code
+Cardinalidad: un rol puede tener muchos usuarios (1 a muchos).
+
+roles es un maestro de catálogo. Cada usuario debe pertenecer a uno de los dos
+roles existentes: ADMIN o CLINICIAN.
+
+
+10.2 MAESTRO: users
+-------------------
+
+Detalles directos:
+
+- mfa_credentials mediante mfa_credentials.user_id
+  Cardinalidad: un usuario puede tener cero o una configuración MFA (1 a 0..1).
+
+- sessions mediante sessions.user_id
+  Cardinalidad: un usuario puede tener muchas sesiones (1 a muchos).
+
+- patients mediante patients.owner_clinician_id
+  Cardinalidad: un médico puede ser responsable de muchos pacientes
+  (1 a muchos), pero cada paciente tiene un solo médico responsable.
+
+users también aparece como referencia en campos como created_by, updated_by,
+reviewed_by, recorded_by y generated_by. Esas relaciones indican quién realizó
+una acción, pero no convierten necesariamente al registro en un detalle
+funcional del usuario.
+
+
+10.3 MAESTRO PRINCIPAL: patients
+--------------------------------
+
+Detalles directos:
+
+- patient_contacts mediante patient_contacts.patient_id
+  Cardinalidad: un paciente tiene cero o un registro de contacto (1 a 0..1).
+
+- patient_clinical_profiles mediante patient_clinical_profiles.patient_id
+  Cardinalidad: un paciente tiene cero o un perfil clínico actual (1 a 0..1).
+
+- prior_exams mediante prior_exams.patient_id
+  Cardinalidad: un paciente puede tener muchos exámenes históricos
+  (1 a muchos).
+
+- clinical_episodes mediante clinical_episodes.patient_id
+  Cardinalidad: un paciente puede tener muchos episodios (1 a muchos).
+
+- stored_assets mediante stored_assets.patient_id
+  Cardinalidad: un paciente puede tener muchos archivos cifrados
+  (1 a muchos).
+
+patients es la tabla maestra central del área clínica. Contacto, perfil,
+antecedentes, episodios y archivos no tienen sentido funcional sin el paciente
+al que pertenecen.
+
+
+10.4 MAESTRO: clinical_episodes
+-------------------------------
+
+Detalles directos:
+
+- radiographic_studies mediante radiographic_studies.episode_id
+  Cardinalidad: un episodio puede contener uno o varios estudios
+  radiográficos (1 a muchos).
+
+- draft_reports mediante draft_reports.episode_id
+  Cardinalidad: un episodio puede generar varios reportes (1 a muchos).
+
+clinical_episodes es detalle de patients y, al mismo tiempo, maestro de los
+estudios y reportes generados durante ese episodio.
+
+
+10.5 MAESTRO: image_preflight_reviews
+-------------------------------------
+
+Detalle: radiographic_studies
+Relación: image_preflight_reviews.id -> radiographic_studies.preflight_id
+Cardinalidad: una revisión previa puede asociarse con uno o varios estudios;
+para el estudio esta relación es opcional.
+
+Esta tabla conserva la validación previa de la imagen antes de crear el estudio.
+
+
+10.6 MAESTRO: stored_assets
+---------------------------
+
+Detalles o usos del archivo:
+
+- radiographic_studies mediante radiographic_studies.asset_id;
+- gradcam_explanations mediante gradcam_explanations.asset_id;
+- draft_reports mediante draft_reports.asset_id.
+
+Cardinalidad física: un archivo registrado puede ser referenciado por uno o
+varios registros dependientes (1 a muchos).
+
+stored_assets actúa como maestro técnico de archivos. Describe dónde está el
+archivo cifrado y permite que una radiografía, un Grad-CAM o un reporte lo use
+sin guardar el contenido binario dentro de esas tablas.
+
+
+10.7 MAESTRO: radiographic_studies
+----------------------------------
+
+Detalle: knee_observations
+Relación: radiographic_studies.id -> knee_observations.study_id
+Cardinalidad: un estudio puede producir una o más observaciones de rodilla
+(1 a muchos).
+
+radiographic_studies es detalle de clinical_episodes y maestro de las rodillas
+que se analizan a partir de la imagen.
+
+
+10.8 MAESTRO: knee_observations
+-------------------------------
+
+Detalles directos:
+
+- clinical_observations mediante clinical_observations.knee_observation_id
+  Cardinalidad: una observación de rodilla tiene cero o una fotografía de datos
+  clínicos (1 a 0..1).
+
+- inference_jobs mediante inference_jobs.observation_id
+  Cardinalidad: una observación puede generar muchos trabajos de inferencia
+  (1 a muchos).
+
+- model_predictions mediante model_predictions.observation_id
+  Cardinalidad: una observación puede tener varias predicciones de modelos
+  diferentes (1 a muchos).
+
+knee_observations es detalle de radiographic_studies y maestro de la información
+clínica y los resultados calculados para una rodilla específica.
+
+
+10.9 MAESTRO: inference_jobs
+----------------------------
+
+Detalle: model_predictions
+Relación: inference_jobs.id -> model_predictions.job_id
+Cardinalidad: un trabajo puede producir cero o una predicción asociada
+(1 a 0..1), porque job_id es único.
+
+El trabajo existe mientras se encuentra en cola o ejecución. Cuando termina
+correctamente, su resultado se conserva en model_predictions.
+
+
+10.10 MAESTRO: model_predictions
+--------------------------------
+
+Detalles directos:
+
+- gradcam_explanations mediante gradcam_explanations.prediction_id
+  Cardinalidad: una predicción puede tener varios mapas Grad-CAM
+  (1 a muchos; normalmente uno por backbone).
+
+- clinician_reviews mediante clinician_reviews.prediction_id
+  Cardinalidad: una predicción puede tener varias revisiones médicas
+  registradas en el tiempo (1 a muchos).
+
+model_predictions es detalle de una observación de rodilla y, cuando proviene
+de un trabajo, también es detalle de inference_jobs. A su vez, funciona como
+maestro de explicaciones y revisiones clínicas.
+
+
+10.11 TABLAS SIN DETALLE FUNCIONAL PROPIO
+-----------------------------------------
+
+- app_settings: maestro independiente de configuraciones del sistema.
+- audit_events: detalle histórico global de las acciones realizadas; no tiene
+  tablas hijas.
+- schema_migrations: tabla técnica independiente para controlar qué migraciones
+  ya se ejecutaron.
+
+
+10.12 RESUMEN MAESTRO -> DETALLE
+--------------------------------
+
+roles
+  -> users
+
+users
+  -> mfa_credentials
+  -> sessions
+  -> patients
+
+patients
+  -> patient_contacts
+  -> patient_clinical_profiles
+  -> prior_exams
+  -> clinical_episodes
+  -> stored_assets
+
+clinical_episodes
+  -> radiographic_studies
+  -> draft_reports
+
+image_preflight_reviews
+  -> radiographic_studies
+
+stored_assets
+  -> radiographic_studies
+  -> gradcam_explanations
+  -> draft_reports
+
+radiographic_studies
+  -> knee_observations
+
+knee_observations
+  -> clinical_observations
+  -> inference_jobs
+  -> model_predictions
+
+inference_jobs
+  -> model_predictions
+
+model_predictions
+  -> gradcam_explanations
+  -> clinician_reviews
+
+
+11. ARCHIVOS DE REFERENCIA
 --------------------------
 
 - Modelo visual para dbdiagram.io: docs/database.dbml
