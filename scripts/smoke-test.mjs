@@ -96,6 +96,10 @@ async function main() {
     phone: '912345678', email: null,
   } })).result;
   const search = (await request(`/api/patients/search?identifier=${syntheticDni}`)).result;
+  await request(`/api/patients/${patient.id}/clinical-profile`, { method: 'PATCH', body: {
+    painScore: null, obesity: false, diabetes: false, hypertension: true,
+    nicotineUse: false, traumaLowerExtremity: false,
+  } });
   const episode = (await request(`/api/patients/${patient.id}/episodes`, {
     method: 'POST', body: { openedAt: '2026-09-04' },
   })).result;
@@ -111,13 +115,10 @@ async function main() {
   form.append('acquisitionConfirmed', 'true'); form.append('invertPolarity', 'false'); form.append('swapSides', 'false');
   if (preflight.reviewStatus === 'REJECTED') form.append('manualOverrideReason', 'Imagen sintética controlada para la prueba automatizada');
   const study = (await request(`/api/episodes/${episode.id}/studies`, { method: 'POST', form })).result;
-  const queued = (await request(`/api/observations/${study.observationId}/inference`, {
-    method: 'POST', body: { idempotencyKey: unique },
-  })).result;
 
   let job;
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    job = (await request(`/api/inference-jobs/${queued.id}`)).result;
+    job = (await request(`/api/inference-jobs/${study.jobId}`)).result;
     if (job.status === 'SUCCEEDED' || job.status === 'FAILED') break;
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
@@ -126,10 +127,6 @@ async function main() {
   await request(`/api/predictions/${job.predictionId}/review`, {
     method: 'POST', body: { decision: 'CONFIRMED', confirmedKl: predictedKl, reason: 'Prueba sintética automatizada' },
   });
-  await request(`/api/observations/${study.observationId}/clinical`, { method: 'POST', body: {
-    painScore: null, obesity: false, diabetes: false, hypertension: true,
-    nicotineUse: false, traumaLowerExtremity: false,
-  } });
   await request(`/api/patients/${patient.id}/prior-exams`, { method: 'POST', body: {
     kneeSide: 'R', examDate: '2025-06-01', confirmedKl: Math.max(0, predictedKl - 1), painScore: 4,
     obesity: false, diabetes: false, hypertension: true, nicotineUse: false, traumaLowerExtremity: false,
@@ -144,6 +141,7 @@ async function main() {
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
   const report = (await request(`/api/episodes/${episode.id}/reports`, { method: 'POST', body: {} })).result;
+  const analysis = (await request(`/api/episodes/${episode.id}/analysis`)).result;
   const download = await fetch(`${baseUrl}/api/reports/${report.id}/download`, { headers: { cookie } });
   const pdf = Buffer.from(await download.arrayBuffer());
   if (!download.ok || pdf.subarray(0, 4).toString() !== '%PDF') throw new Error(`Descarga PDF HTTP ${download.status}`);
@@ -156,6 +154,7 @@ async function main() {
     gradCamCount: explanations.length,
     xgboost: { probability: arthroplasty.probability, featureCount: Object.keys(arthroplasty.features ?? {}).length, threshold: arthroplasty.threshold },
     lstm: { available: progression.available, probability: progression.probability, threshold: progression.threshold },
+    episodeSummary: { studies: analysis.studies?.length, radiologySeconds: analysis.studies?.[0]?.radiologySeconds },
     report: { status: report.status, pdfBytes: pdf.length },
   }, null, 2));
 }

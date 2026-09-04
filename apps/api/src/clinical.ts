@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
@@ -12,6 +12,7 @@ type ContextRow = {
   observation_id: string; patient_id: string; episode_id: string; exam_date: string; knee_side: 'L' | 'R';
   confirmed_kl: number; pain_score: number | null; obesity: boolean; diabetes: boolean; hypertension: boolean;
   nicotine_use: boolean; trauma_lower_extremity: boolean; birth_date_cipher: Buffer; sex_cipher: Buffer | null;
+  kl_origin: 'CLINICIAN' | 'MODEL';
 };
 
 const requiredBoolean = (value: unknown, name: string) => {
@@ -48,6 +49,38 @@ export class ClinicalController {
        JOIN patients p ON p.id=e.patient_id WHERE k.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [observationId, userId],
     );
     if (!owned.rowCount) throw new BadRequestException('Observación no encontrada');
+  }
+
+  private async ensurePatient(patientId: string, userId: string) {
+    const owned = await this.db.query('SELECT 1 FROM patients WHERE id=$1 AND owner_clinician_id=$2 AND archived_at IS NULL', [patientId, userId]);
+    if (!owned.rowCount) throw new BadRequestException('Paciente no encontrado');
+  }
+
+  @Get('patients/:patientId/clinical-profile')
+  async clinicalProfile(@Param('patientId') patientId: string, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente'); await this.ensurePatient(patientId, user.id);
+    const row = (await this.db.query<any>(
+      `SELECT pain_score "painScore",obesity,diabetes,hypertension,nicotine_use "nicotineUse",
+       trauma_lower_extremity "traumaLowerExtremity",updated_at "updatedAt"
+       FROM patient_clinical_profiles WHERE patient_id=$1`, [patientId],
+    )).rows[0];
+    return row ?? null;
+  }
+
+  @Patch('patients/:patientId/clinical-profile')
+  async updateClinicalProfile(@Param('patientId') patientId: string, @Body() body: any, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente'); await this.ensurePatient(patientId, user.id);
+    const flags = this.flags(body); const pain = validatePain(body.painScore);
+    await this.db.query(
+      `INSERT INTO patient_clinical_profiles(patient_id,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,updated_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(patient_id) DO UPDATE SET pain_score=EXCLUDED.pain_score,
+       obesity=EXCLUDED.obesity,diabetes=EXCLUDED.diabetes,hypertension=EXCLUDED.hypertension,
+       nicotine_use=EXCLUDED.nicotine_use,trauma_lower_extremity=EXCLUDED.trauma_lower_extremity,
+       updated_by=EXCLUDED.updated_by,updated_at=now()`,
+      [patientId, pain, flags.obesity, flags.diabetes, flags.hypertension, flags.nicotineUse, flags.traumaLowerExtremity, user.id],
+    );
+    await this.audit.record(user.id, 'PATIENT_CLINICAL_PROFILE_UPDATED', 'Patient', patientId);
+    return { saved: true };
   }
 
   @Post('observations/:id/clinical')
@@ -90,18 +123,59 @@ export class ClinicalController {
     return { id: result.rows[0].id };
   }
 
+  @Get('patients/:patientId/prior-exams')
+  async priorExams(@Param('patientId') patientId: string, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente'); await this.ensurePatient(patientId, user.id);
+    return (await this.db.query(
+      `SELECT id,knee_side "kneeSide",exam_date "examDate",confirmed_kl "confirmedKl",pain_score "painScore",
+       obesity,diabetes,hypertension,nicotine_use "nicotineUse",trauma_lower_extremity "traumaLowerExtremity"
+       FROM prior_exams WHERE patient_id=$1 ORDER BY exam_date DESC,knee_side`, [patientId],
+    )).rows;
+  }
+
+  @Delete('patients/:patientId/prior-exams/:id')
+  async deletePrior(@Param('patientId') patientId: string, @Param('id') id: string, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente'); id = uuid(id, 'Antecedente'); await this.ensurePatient(patientId, user.id);
+    const deleted = await this.db.query('DELETE FROM prior_exams WHERE id=$1 AND patient_id=$2 RETURNING id', [id, patientId]);
+    if (!deleted.rowCount) throw new BadRequestException('Antecedente no encontrado');
+    await this.audit.record(user.id, 'PRIOR_EXAM_DELETED', 'PriorExam', id);
+    return { deleted: true };
+  }
+
   private async currentContext(observationId: string, userId: string): Promise<ContextRow> {
     const result = await this.db.query<ContextRow>(
-      `SELECT k.id observation_id,e.patient_id,e.id episode_id,s.exam_date,k.knee_side,r.confirmed_kl,c.pain_score,
+      `SELECT k.id observation_id,e.patient_id,e.id episode_id,s.exam_date,k.knee_side,
+       COALESCE(r.confirmed_kl,(mp.probabilities->>'predictedKl')::smallint) confirmed_kl,
+       CASE WHEN r.confirmed_kl IS NULL THEN 'MODEL' ELSE 'CLINICIAN' END kl_origin,c.pain_score,
        c.obesity,c.diabetes,c.hypertension,c.nicotine_use,c.trauma_lower_extremity,p.birth_date_cipher,p.sex_cipher
        FROM knee_observations k JOIN radiographic_studies s ON s.id=k.study_id
        JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id
-       JOIN LATERAL (SELECT confirmed_kl,decision FROM clinician_reviews r JOIN model_predictions mp ON mp.id=r.prediction_id
-         WHERE mp.observation_id=k.id ORDER BY reviewed_at DESC LIMIT 1) r ON r.decision<>'REJECTED'
-       JOIN clinical_observations c ON c.knee_observation_id=k.id WHERE k.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [observationId, userId],
+       JOIN LATERAL (SELECT id,probabilities FROM model_predictions WHERE observation_id=k.id AND model_name='Ensemble-v2' ORDER BY created_at DESC LIMIT 1) mp ON true
+       LEFT JOIN LATERAL (SELECT confirmed_kl,decision FROM clinician_reviews WHERE prediction_id=mp.id ORDER BY reviewed_at DESC LIMIT 1) r ON true
+       JOIN clinical_observations c ON c.knee_observation_id=k.id WHERE k.id=$1 AND p.owner_clinician_id=$2
+       AND p.archived_at IS NULL AND (r.decision IS NULL OR r.decision<>'REJECTED')`, [observationId, userId],
     );
-    if (!result.rows[0]) throw new BadRequestException('Se requiere revisión KL aceptada y datos clínicos completos');
+    if (!result.rows[0]) throw new BadRequestException('Se requiere una clasificación KL válida y el perfil clínico del paciente');
     return result.rows[0];
+  }
+
+  private async history(patientId: string, kneeSide: 'L' | 'R', before: string) {
+    return (await this.db.query<any>(
+      `WITH combined AS (
+         SELECT pe.exam_date,pe.confirmed_kl,pe.pain_score,pe.obesity,pe.diabetes,pe.hypertension,
+          pe.nicotine_use,pe.trauma_lower_extremity,2 priority
+         FROM prior_exams pe WHERE pe.patient_id=$1 AND pe.knee_side=$2 AND pe.exam_date<$3
+         UNION ALL
+         SELECT s.exam_date,COALESCE(cr.confirmed_kl,(mp.probabilities->>'predictedKl')::smallint),co.pain_score,
+          co.obesity,co.diabetes,co.hypertension,co.nicotine_use,co.trauma_lower_extremity,1 priority
+         FROM radiographic_studies s JOIN clinical_episodes e ON e.id=s.episode_id
+         JOIN knee_observations k ON k.study_id=s.id JOIN clinical_observations co ON co.knee_observation_id=k.id
+         JOIN LATERAL (SELECT id,probabilities FROM model_predictions WHERE observation_id=k.id AND model_name='Ensemble-v2' ORDER BY created_at DESC LIMIT 1) mp ON true
+         LEFT JOIN LATERAL (SELECT decision,confirmed_kl FROM clinician_reviews WHERE prediction_id=mp.id ORDER BY reviewed_at DESC LIMIT 1) cr ON true
+         WHERE e.patient_id=$1 AND k.knee_side=$2 AND s.exam_date<$3 AND (cr.decision IS NULL OR cr.decision<>'REJECTED')
+       ) SELECT DISTINCT ON (exam_date) * FROM combined ORDER BY exam_date,priority DESC`,
+      [patientId, kneeSide, before],
+    )).rows;
   }
 
   private async mlRisk(path: string, payload: unknown) {
@@ -127,38 +201,32 @@ export class ClinicalController {
     const current = await this.currentContext(observationId, user.id);
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
     const sex = current.sex_cipher ? this.crypto.decryptText(current.sex_cipher, `patient:${current.patient_id}:sex`) : null;
-    const history = await this.db.query<{ exam_date: string; confirmed_kl: number; knee_side: 'L' | 'R' }>(
-      `SELECT exam_date,confirmed_kl,knee_side FROM prior_exams WHERE patient_id=$1 AND knee_side=$2 AND exam_date<$3 ORDER BY exam_date`,
-      [current.patient_id, current.knee_side, current.exam_date],
-    );
+    const history = await this.history(current.patient_id, current.knee_side, current.exam_date);
     const payload = {
       date_of_birth: birth, exam_date: current.exam_date, current_kl: current.confirmed_kl,
       pain_score: current.pain_score === null ? null : Number(current.pain_score), sex, knee_side: current.knee_side,
       ...this.semanticFlags(current),
-      prior_exams: history.rows.map((item) => ({ date: item.exam_date, KLG: item.confirmed_kl, knee_side: item.knee_side })),
+      prior_exams: history.map((item) => ({ date: item.exam_date, KLG: item.confirmed_kl, knee_side: current.knee_side })),
     };
     const { result, latencyMs } = await this.mlRisk('/v1/risks/arthroplasty', payload);
     const id = await this.persistRisk(current, user, result, latencyMs, payload, 'XGBoost-v2');
     await this.audit.record(user.id, 'ARTHROPLASTY_RISK_COMPUTED', 'ModelPrediction', id);
-    return { id, ...result, warning: 'Resultado experimental. No constituye indicación quirúrgica.' };
+    return { id, ...result, klOrigin: current.kl_origin, warning: 'Resultado experimental. No constituye indicación quirúrgica.' };
   }
 
   @Post('observations/:id/risks/progression')
   async progression(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
     const current = await this.currentContext(observationId, user.id);
-    if (current.confirmed_kl === 4) return { available: false, reason: 'LSTM no disponible para t2 KL4' };
-    const prior = (await this.db.query<any>(
-      `SELECT * FROM prior_exams WHERE patient_id=$1 AND knee_side=$2 AND exam_date<$3 ORDER BY exam_date DESC LIMIT 1`,
-      [current.patient_id, current.knee_side, current.exam_date],
-    )).rows[0];
-    if (!prior) return { available: false, reason: 'Predicción no disponible: se requieren dos observaciones confirmadas' };
+    if (current.confirmed_kl === 4) return { available: false, klOrigin: current.kl_origin, reason: 'LSTM no disponible para t2 KL4' };
+    const prior = (await this.history(current.patient_id, current.knee_side, current.exam_date)).at(-1);
+    if (!prior) return { available: false, klOrigin: current.kl_origin, reason: 'Se necesita un estudio anterior de la misma rodilla con una fecha diferente' };
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
     const payload = {
       patient_reference: this.crypto.blindIndex(current.patient_id),
       observations: [
         { date: prior.exam_date, KLG: prior.confirmed_kl, age_at_exam: yearsAt(birth, prior.exam_date),
-          pain_score: prior.pain_score === null ? null : Number(prior.pain_score), knee_side: prior.knee_side, ...this.semanticFlags(prior) },
+          pain_score: prior.pain_score === null ? null : Number(prior.pain_score), knee_side: current.knee_side, ...this.semanticFlags(prior) },
         { date: current.exam_date, KLG: current.confirmed_kl, age_at_exam: yearsAt(birth, current.exam_date),
           pain_score: current.pain_score === null ? null : Number(current.pain_score), knee_side: current.knee_side, ...this.semanticFlags(current) },
       ],
@@ -166,18 +234,19 @@ export class ClinicalController {
     const { result, latencyMs } = await this.mlRisk('/v1/risks/progression', payload);
     const id = await this.persistRisk(current, user, result, latencyMs, payload, 'LSTM-v2');
     await this.audit.record(user.id, 'PROGRESSION_RISK_COMPUTED', 'ModelPrediction', id);
-    return { available: true, id, ...result, warning: 'Resultado experimental; requiere interpretación médica.' };
+    return { available: true, id, ...result, klOrigin: current.kl_origin, warning: 'Resultado experimental; requiere interpretación médica.' };
   }
 
   private async persistRisk(current: ContextRow, user: AuthUser, result: any, latencyMs: number, payload: unknown, model: string) {
     const hash = createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    await this.db.query('DELETE FROM model_predictions WHERE observation_id=$1 AND model_name=$2', [current.observation_id, model]);
     const inserted = await this.db.query<{ id: string }>(
       `INSERT INTO model_predictions(observation_id,model_name,model_version,artifact_hashes,input_hash,input_source,
        knee_side,probabilities,threshold,screen_positive,kl_origin,latency_ms,device,correlation_id,created_by)
-       VALUES($1,$2,$3,$4,$5,'STRUCTURED',$6,$7,$8,$9,'CLINICIAN',$10,'cpu-service',gen_random_uuid(),$11) RETURNING id`,
+       VALUES($1,$2,$3,$4,$5,'STRUCTURED',$6,$7,$8,$9,$10,$11,'cpu-service',gen_random_uuid(),$12) RETURNING id`,
       [current.observation_id, model, result.model_version, JSON.stringify({ model: result.model_hash }), hash,
         current.knee_side, JSON.stringify({ probability: result.probability, target: result.target, horizon: result.horizon,
-          features: result.features ?? null }), result.threshold, result.screen_positive, latencyMs, user.id],
+          features: result.features ?? null }), result.threshold, result.screen_positive, current.kl_origin, latencyMs, user.id],
     );
     return inserted.rows[0].id;
   }
@@ -192,6 +261,88 @@ export class ClinicalController {
     if (!response.ok) return null;
     const result = await response.json() as { preview_base64_png: string };
     return Buffer.from(result.preview_base64_png, 'base64');
+  }
+
+  private async studySummary(study: any, includeGradcams = false) {
+    const predictions = (await this.db.query<any>(
+      `SELECT mp.id,mp.model_name "modelName",mp.model_version "modelVersion",mp.probabilities,mp.threshold,
+       mp.screen_positive "screenPositive",mp.kl_origin "klOrigin",mp.latency_ms "latencyMs",mp.device,mp.created_at "createdAt",
+       cr.decision,cr.confirmed_kl "confirmedKl",cr.reason,cr.reviewed_at "reviewedAt"
+       FROM model_predictions mp LEFT JOIN LATERAL (
+        SELECT decision,confirmed_kl,reason,reviewed_at FROM clinician_reviews WHERE prediction_id=mp.id ORDER BY reviewed_at DESC LIMIT 1
+       ) cr ON true WHERE mp.observation_id=$1 ORDER BY mp.created_at`, [study.observationId],
+    )).rows;
+    const ensemble = predictions.find((item: any) => item.modelName === 'Ensemble-v2') ?? null;
+    const jobs = (await this.db.query<any>(
+      `SELECT id,job_type "jobType",status,error_code "errorCode",started_at "startedAt",finished_at "finishedAt"
+       FROM inference_jobs WHERE observation_id=$1 ORDER BY created_at`, [study.observationId],
+    )).rows;
+    const elapsed = jobs.filter((item: any) => item.startedAt && item.finishedAt)
+      .reduce((sum: number, item: any) => sum + Math.max(0, new Date(item.finishedAt).getTime() - new Date(item.startedAt).getTime()), 0);
+    const result: any = {
+      ...study,
+      previewUrl: `/api/studies/${study.studyId}/preview`,
+      status: jobs.some((item: any) => item.status === 'FAILED') ? 'FAILED' : ensemble ? (jobs.some((item: any) => item.status !== 'SUCCEEDED') ? 'PROCESSING' : 'COMPLETED') : 'PROCESSING',
+      ensemble,
+      arthroplasty: predictions.find((item: any) => item.modelName === 'XGBoost-v2') ?? null,
+      progression: predictions.find((item: any) => item.modelName === 'LSTM-v2') ?? null,
+      radiologySeconds: ensemble?.latencyMs == null ? null : Number((Number(ensemble.latencyMs) / 1000).toFixed(2)),
+      totalProcessingSeconds: Number((elapsed / 1000).toFixed(2)), jobs,
+    };
+    if (includeGradcams && ensemble) {
+      const cams = await this.db.query<{ id: string; backbone: string; target_kl: number; storage_key: string }>(
+        `SELECT g.id,g.backbone,g.target_kl,a.storage_key FROM gradcam_explanations g JOIN stored_assets a ON a.id=g.asset_id
+         WHERE g.prediction_id=$1 ORDER BY g.backbone`, [ensemble.id],
+      );
+      result.gradcams = await Promise.all(cams.rows.map(async (item) => ({ id: item.id, backbone: item.backbone,
+        targetKl: item.target_kl, dataUrl: `data:image/png;base64,${(await this.assets.read(item.storage_key)).toString('base64')}` })));
+    }
+    return result;
+  }
+
+  @Get('patients/:patientId/analyses')
+  async analyses(@Param('patientId') patientId: string, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente'); await this.ensurePatient(patientId, user.id);
+    const rows = (await this.db.query<any>(
+      `SELECT e.id "episodeId",e.opened_at "episodeDate",s.id "studyId",s.exam_date "examDate",s.source_type "sourceType",
+       k.id "observationId",k.knee_side "kneeSide" FROM clinical_episodes e JOIN radiographic_studies s ON s.episode_id=e.id
+       JOIN knee_observations k ON k.study_id=s.id WHERE e.patient_id=$1 ORDER BY s.exam_date DESC,s.created_at DESC`, [patientId],
+    )).rows;
+    return Promise.all(rows.map((row) => this.studySummary(row)));
+  }
+
+  @Get('episodes/:episodeId/analysis')
+  async episodeAnalysis(@Param('episodeId') episodeId: string, @CurrentUser() user: AuthUser) {
+    episodeId = uuid(episodeId, 'Episodio');
+    const episode = (await this.db.query<any>(
+      `SELECT e.id "episodeId",e.opened_at "episodeDate",e.status,p.id "patientId"
+       FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
+       WHERE e.id=$1 AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [episodeId, user.id],
+    )).rows[0];
+    if (!episode) throw new BadRequestException('Episodio no encontrado');
+    const studies = (await this.db.query<any>(
+      `SELECT e.id "episodeId",e.opened_at "episodeDate",s.id "studyId",s.exam_date "examDate",s.source_type "sourceType",
+       k.id "observationId",k.knee_side "kneeSide" FROM clinical_episodes e JOIN radiographic_studies s ON s.episode_id=e.id
+       JOIN knee_observations k ON k.study_id=s.id WHERE e.id=$1 ORDER BY s.exam_date,s.created_at`, [episodeId],
+    )).rows;
+    const reports = (await this.db.query(
+      `SELECT id,report_type "reportType",generated_at "generatedAt" FROM draft_reports WHERE episode_id=$1 ORDER BY generated_at DESC`, [episodeId],
+    )).rows;
+    return { ...episode, studies: await Promise.all(studies.map((row) => this.studySummary(row, true))), reports };
+  }
+
+  @Get('studies/:studyId/preview')
+  async studyPreview(@Param('studyId') studyId: string, @CurrentUser() user: AuthUser, @Res() response: Response) {
+    studyId = uuid(studyId, 'Estudio');
+    const study = (await this.db.query<{ storage_key: string; content_type: string }>(
+      `SELECT a.storage_key,a.content_type FROM radiographic_studies s JOIN stored_assets a ON a.id=s.asset_id
+       JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id
+       WHERE s.id=$1 AND p.owner_clinician_id=$2`, [studyId, user.id],
+    )).rows[0];
+    if (!study) throw new BadRequestException('Estudio no encontrado');
+    const image = await this.renderRadiograph(study.storage_key, study.content_type);
+    if (!image) throw new BadRequestException('No fue posible generar la vista del estudio');
+    response.set({ 'content-type': 'image/png', 'cache-control': 'private, no-store' }); response.send(image);
   }
 
   @Post('episodes/:episodeId/reports')

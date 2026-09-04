@@ -25,12 +25,11 @@ export class AdminController {
     return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, Number(value)]));
   }
 
-  @Get('users')
-  async users(@Query('page') pageValue?: string, @Query('search') searchValue?: string) {
+  private async accounts(role: 'ADMIN' | 'CLINICIAN', pageValue?: string, searchValue?: string) {
     const page = pageNumber(pageValue); const search = String(searchValue ?? '').trim().slice(0, 100);
     const pattern = `%${search.replace(/[\\%_]/g, '\\$&')}%`;
-    const where = search ? `WHERE email ILIKE $1 ESCAPE '\\' OR display_name ILIKE $1 ESCAPE '\\' OR COALESCE(specialty,'') ILIKE $1 ESCAPE '\\'` : '';
-    const values = search ? [pattern] : [];
+    const where = search ? `WHERE role_code=$1 AND (email ILIKE $2 ESCAPE '\\' OR display_name ILIKE $2 ESCAPE '\\' OR COALESCE(specialty,'') ILIKE $2 ESCAPE '\\')` : 'WHERE role_code=$1';
+    const values = search ? [role, pattern] : [role];
     const total = Number((await this.db.query<{ count: string }>(`SELECT count(*)::text count FROM users ${where}`, values)).rows[0].count);
     const offset = (Math.min(page, Math.max(1, Math.ceil(total / PAGE_SIZE))) - 1) * PAGE_SIZE;
     const result = await this.db.query(
@@ -42,6 +41,12 @@ export class AdminController {
     return { items: result.rows, page: Math.floor(offset / PAGE_SIZE) + 1, pageSize: PAGE_SIZE, total, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
   }
 
+  @Get('users')
+  users(@Query('page') page?: string, @Query('search') search?: string) { return this.accounts('ADMIN', page, search); }
+
+  @Get('clinicians')
+  clinicians(@Query('page') page?: string, @Query('search') search?: string) { return this.accounts('CLINICIAN', page, search); }
+
   private normalized(body: UserInput, passwordRequired: boolean) {
     const normalizedEmail = email(body.email, true)!;
     const displayName = text(body.displayName, 'Nombre visible', 2, 100);
@@ -52,28 +57,25 @@ export class AdminController {
       professionalLicense: optionalText(body.professionalLicense, 'Colegiatura', 30), specialty: optionalText(body.specialty, 'Especialidad', 80) };
   }
 
-  @Post('users')
-  async createUser(@Body() body: UserInput, @CurrentUser() actor: AuthUser) {
-    const input = this.normalized(body, true);
+  @Post('clinicians')
+  async createClinician(@Body() body: UserInput, @CurrentUser() actor: AuthUser) {
+    const input = this.normalized({ ...body, role: 'CLINICIAN' }, true);
     const hash = await argon2.hash(input.password!, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
     try {
       const result = await this.db.query<{ id: string }>(
         `INSERT INTO users(email,display_name,password_hash,role_code,professional_license,specialty) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
         [input.email, input.displayName, hash, input.role, input.professionalLicense, input.specialty],
       );
-      await this.audit.record(actor.id, 'USER_CREATED', 'User', result.rows[0].id, { role: input.role });
+      await this.audit.record(actor.id, 'CLINICIAN_CREATED', 'User', result.rows[0].id, { accountCreated: true });
       return { id: result.rows[0].id };
     } catch (error: any) { if (error?.code === '23505') throw new BadRequestException('El correo ya está registrado'); throw error; }
   }
 
-  @Patch('users/:id')
-  async updateUser(@Param('id') id: string, @Body() body: UserInput, @CurrentUser() actor: AuthUser) {
-    id = uuid(id, 'Usuario'); const input = this.normalized(body, false);
-    if (id === actor.id && input.role !== 'ADMIN') throw new BadRequestException('No puede retirar su propio rol de administrador');
-    if (input.role === 'ADMIN') {
-      const owned = await this.db.query('SELECT 1 FROM patients WHERE owner_clinician_id=$1 AND archived_at IS NULL LIMIT 1', [id]);
-      if (owned.rowCount) throw new BadRequestException('No puede convertir en administrador a un médico con pacientes activos');
-    }
+  private async updateAccount(id: string, body: UserInput, actor: AuthUser, expectedRole: 'ADMIN' | 'CLINICIAN') {
+    id = uuid(id, 'Usuario');
+    const target = (await this.db.query<{ role_code: 'ADMIN' | 'CLINICIAN' }>('SELECT role_code FROM users WHERE id=$1', [id])).rows[0];
+    if (!target || target.role_code !== expectedRole) throw new BadRequestException(expectedRole === 'ADMIN' ? 'Usuario no encontrado' : 'Médico no encontrado');
+    const input = this.normalized({ ...body, role: expectedRole }, false);
     const passwordHash = input.password ? await argon2.hash(input.password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 }) : null;
     try {
       const result = await this.db.query<{ id: string }>(
@@ -85,6 +87,16 @@ export class AdminController {
       await this.audit.record(actor.id, 'USER_UPDATED', 'User', id, { role: input.role, passwordChanged: Boolean(passwordHash) });
       return { updated: true };
     } catch (error: any) { if (error?.code === '23505') throw new BadRequestException('El correo ya está registrado'); throw error; }
+  }
+
+  @Patch('users/:id')
+  updateUser(@Param('id') id: string, @Body() body: UserInput, @CurrentUser() actor: AuthUser) {
+    return this.updateAccount(id, body, actor, 'ADMIN');
+  }
+
+  @Patch('clinicians/:id')
+  updateClinician(@Param('id') id: string, @Body() body: UserInput, @CurrentUser() actor: AuthUser) {
+    return this.updateAccount(id, body, actor, 'CLINICIAN');
   }
 
   @Delete('users/:id')

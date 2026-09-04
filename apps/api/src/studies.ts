@@ -304,6 +304,8 @@ export class StudiesController {
        WHERE e.id=$1 AND e.status='OPEN' AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [episodeId, user.id],
     )).rows[0];
     if (!episode) throw new BadRequestException('Episodio no encontrado o cerrado');
+    const profile = (await this.db.query<any>('SELECT * FROM patient_clinical_profiles WHERE patient_id=$1', [episode.patient_id])).rows[0];
+    if (!profile) throw new BadRequestException('Complete primero los datos clínicos de la historia del paciente');
     const confirmation = { projection: true, weight: true, orientation: true };
     const stored = await this.assets.write(image.buffer);
     const ids = await this.db.transaction(async (client) => {
@@ -324,11 +326,22 @@ export class StudiesController {
       const observation = await client.query<{ id: string }>(
         'INSERT INTO knee_observations(study_id,knee_side) VALUES($1,$2) RETURNING id', [study.rows[0].id, body.kneeSide],
       );
-      return { studyId: study.rows[0].id, observationId: observation.rows[0].id };
+      await client.query(
+        `INSERT INTO clinical_observations(knee_observation_id,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,recorded_by)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [observation.rows[0].id, profile.pain_score, profile.obesity, profile.diabetes, profile.hypertension,
+          profile.nicotine_use, profile.trauma_lower_extremity, user.id],
+      );
+      const job = await client.query<{ id: string }>(
+        `INSERT INTO inference_jobs(observation_id,job_type,idempotency_key,created_by)
+         VALUES($1,'KL',$2,$3) RETURNING id`, [observation.rows[0].id, `kl:${observation.rows[0].id}:automatic`, user.id],
+      );
+      return { studyId: study.rows[0].id, observationId: observation.rows[0].id, jobId: job.rows[0].id };
     });
     await this.audit.record(user.id, 'STUDY_UPLOADED', 'RadiographicStudy', ids.studyId, {
       sourceType, kneeSide: body.kneeSide, preflightStatus: preflight.review_status, manualOverride: Boolean(overrideReason),
     });
+    await this.audit.record(user.id, 'INFERENCE_QUEUED', 'InferenceJob', ids.jobId, { automatic: true });
     return ids;
   }
 
@@ -358,6 +371,7 @@ export class StudiesController {
     id = uuid(id, 'Trabajo');
     const result = await this.db.query(
       `SELECT j.id,j.status,j.job_type "jobType",j.error_code "errorCode",j.correlation_id "correlationId",
+       j.created_at "createdAt",j.started_at "startedAt",j.finished_at "finishedAt",
        p.id "predictionId",p.probabilities,p.model_version "modelVersion",p.artifact_hashes "artifactHashes",
        p.latency_ms "latencyMs",p.device
        FROM inference_jobs j JOIN knee_observations k ON k.id=j.observation_id JOIN radiographic_studies s ON s.id=k.study_id

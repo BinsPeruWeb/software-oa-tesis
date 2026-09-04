@@ -37,13 +37,30 @@ la comprobación SHA-256 antes de iniciar inferencia.
 
 La aplicación tiene dos espacios separados:
 
-- **Administrador técnico:** dashboard operativo, CRUD de usuarios y médicos,
-  auditoría y configuración. No puede consultar pacientes ni estudios.
+- **Administrador técnico:** dashboard operativo, usuarios administrativos,
+  gestión separada de médicos, auditoría y configuración. En “Usuarios” solo
+  puede editar o desactivar cuentas existentes; al registrar un médico se crea
+  automáticamente su cuenta de acceso. No puede consultar pacientes ni estudios.
 - **Médico:** dashboard clínico, pacientes propios, estudios, revisiones y
   reportes. Cada paciente pertenece exclusivamente al médico que lo registra.
 
 La historia clínica interna se genera de forma correlativa (`OA-000001`) y se
 almacena cifrada. El médico no debe escribirla manualmente.
+
+El dolor y los cinco indicadores clínicos se registran una sola vez en la ficha
+del paciente y se actualizan cuando cambian. Cada estudio conserva una copia de
+esos valores para mantener la trazabilidad temporal. Los exámenes antiguos que
+no están en el sistema también se agregan desde la historia clínica.
+
+Después de guardar una radiografía se ejecutan automáticamente la clasificación
+KL, los dos Grad-CAM y los riesgos disponibles. La ficha presenta los episodios
+como una línea de tiempo visual; desde “Ver análisis” se consultan todos los
+resultados, tiempos y reportes.
+
+La LSTM necesita dos observaciones de la misma rodilla con fechas distintas. El
+sistema toma automáticamente el análisis anterior más reciente o, si no existe,
+un antecedente externo registrado. No está disponible si el episodio actual es
+KL4.
 
 ### Servicios opcionales de automatización
 

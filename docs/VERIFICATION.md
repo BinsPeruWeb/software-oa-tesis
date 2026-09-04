@@ -87,3 +87,14 @@ deshabilita el MFA del administrador.
 - Migración de propiedad, perfiles, configuración y tipo de reporte: aplicada.
 - Limpieza solicitada: 6 pacientes, 23 assets, 6 reportes y 88 eventos de
   auditoría eliminados; la cuenta administrativa original fue conservada.
+
+## Flujo automático y expediente clínico — 2026-09-04
+
+- Usuarios administrativos y médicos separados en el panel.
+- Perfil clínico persistente por paciente y copia trazable por estudio.
+- Inferencia CNN encolada automáticamente al guardar la radiografía.
+- Smoke test: CNN CPU con 5 probabilidades, 2 Grad-CAM, XGBoost con 19
+  variables, LSTM disponible, resumen de episodio y PDF válido.
+- Tiempo radiológico observado en la prueba sintética: 0.24 s.
+- La LSTM integra tanto antecedentes externos como episodios anteriores de la
+  misma rodilla, siempre con fecha estrictamente anterior.
