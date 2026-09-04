@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import base64
 import logging
 import time
 import uuid
@@ -19,17 +20,19 @@ from .engine import (
     ModelSuite,
     json_safe_features,
 )
-from .imaging import prepare_image
+from .imaging import detect_image, prepare_image
 from .integrity import verify_model_package
 from .schemas import (
     ArthroplastyRequest,
     ExplanationResponse,
+    ImagePreflightResponse,
     ImageSourceType,
     KlResponse,
     KneeSide,
     ProgressionRequest,
     RiskResponse,
 )
+from .vision import assess_image
 
 
 logger = logging.getLogger("oa.ml")
@@ -152,6 +155,56 @@ def models_info(model_suite: ModelSuite = Depends(suite)):
         "xgboost_features": XGB_FEATURES,
         "thresholds": {"arthroplasty_24m": XGB_THRESHOLD, "progression_3_12m": LSTM_THRESHOLD},
         "device": str(model_suite.device),
+    }
+
+
+@app.post("/v1/images/preflight", response_model=ImagePreflightResponse, dependencies=[Depends(authorize)])
+async def image_preflight(image: UploadFile = File(...)):
+    content = await read_limited(image)
+    detected = detect_image(content)
+    vision = await assess_image(settings, detected.external_review_png)
+    assessment = vision.assessment
+    if assessment is None:
+        review_status = "UNAVAILABLE"
+        layout = "uncertain"
+    else:
+        layout = assessment.coverage
+        confidently_wrong = assessment.confidence >= 0.85 and (
+            not assessment.is_radiograph or assessment.anatomy == "other"
+        )
+        confidently_valid = (
+            assessment.confidence >= 0.70
+            and assessment.is_radiograph
+            and assessment.anatomy == "knee"
+            and assessment.view == "frontal_ap"
+            and assessment.quality != "unusable"
+        )
+        review_status = "REJECTED" if confidently_wrong else "ACCEPTED" if confidently_valid else "REVIEW_REQUIRED"
+    supported = not (detected.file_kind == "DICOM" and layout == "single")
+    suggested_source = None
+    if layout in {"bilateral", "single"}:
+        if detected.file_kind == "DICOM" and layout == "bilateral":
+            suggested_source = ImageSourceType.DICOM_BILATERAL
+        elif detected.file_kind == "RASTER" and layout == "bilateral":
+            suggested_source = ImageSourceType.RASTER_BILATERAL
+        elif detected.file_kind == "RASTER" and layout == "single":
+            suggested_source = ImageSourceType.RASTER_SINGLE_ROI
+    return {
+        "input_hash": detected.input_hash,
+        "file_kind": detected.file_kind,
+        "media_type": detected.media_type,
+        "exam_date": detected.exam_date,
+        "preview_base64_png": base64.b64encode(detected.preview_png).decode("ascii"),
+        "review_status": review_status,
+        "suggested_layout": layout,
+        "suggested_source_type": suggested_source,
+        "supported": supported,
+        "assessment": assessment.model_dump() if assessment else None,
+        "provider_model": vision.model,
+        "provider_request_id": vision.provider_request_id,
+        "cost_usd": vision.cost,
+        "external_preview_metadata_stripped": True,
+        "external_preview_borders_masked": True,
     }
 
 

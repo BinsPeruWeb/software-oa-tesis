@@ -8,6 +8,7 @@ from io import BytesIO
 import cv2
 import numpy as np
 import pydicom
+from pydicom.dataset import Dataset
 from pydicom.pixels import apply_voi_lut
 
 from .schemas import ImageSourceType, KneeSide
@@ -22,6 +23,17 @@ class PreparedImage:
     roi: np.ndarray
     input_hash: str
     pipeline: str
+
+
+@dataclass(frozen=True)
+class DetectedImage:
+    image: np.ndarray
+    file_kind: str
+    media_type: str
+    exam_date: str | None
+    preview_png: bytes
+    external_review_png: bytes
+    input_hash: str
 
 
 def normalize_pixels(array: np.ndarray) -> np.ndarray:
@@ -53,6 +65,68 @@ def read_dicom(content: bytes, metadata_inverted: bool) -> np.ndarray:
     if photo == "MONOCHROME1" or presentation == "INVERSE" or metadata_inverted:
         array = array.max() + array.min() - array
     return normalize_pixels(array)
+
+
+def _dicom_pixels(dataset: Dataset) -> np.ndarray:
+    raw = dataset.pixel_array
+    if raw.ndim != 2 or int(getattr(dataset, "NumberOfFrames", 1)) != 1:
+        raise ValueError("Solo se admite DICOM radiográfico monoframe 2D")
+    try:
+        array = apply_voi_lut(raw, dataset).astype(np.float32)
+    except Exception:
+        array = raw.astype(np.float32)
+    photo = str(getattr(dataset, "PhotometricInterpretation", "")).upper()
+    presentation = str(getattr(dataset, "PresentationLUTShape", "")).upper()
+    if photo == "MONOCHROME1" or presentation == "INVERSE":
+        array = array.max() + array.min() - array
+    return normalize_pixels(array)
+
+
+def _png_bytes(image: np.ndarray, max_dimension: int, mask_borders: bool) -> bytes:
+    height, width = image.shape
+    scale = min(1.0, max_dimension / max(height, width))
+    if scale < 1.0:
+        image = cv2.resize(image, (max(1, round(width * scale)), max(1, round(height * scale))), interpolation=cv2.INTER_AREA)
+    encoded_image = np.rint(np.clip(image, 0, 1) * 255).astype(np.uint8)
+    if mask_borders:
+        masked = encoded_image.copy()
+        h, w = masked.shape
+        masked[: max(1, round(h * 0.10)), :] = 0
+        masked[h - max(1, round(h * 0.07)) :, :] = 0
+        masked[:, : max(1, round(w * 0.035))] = 0
+        masked[:, w - max(1, round(w * 0.035)) :] = 0
+        encoded_image = masked
+    ok, encoded = cv2.imencode(".png", encoded_image, [cv2.IMWRITE_PNG_COMPRESSION, 6])
+    if not ok:
+        raise ValueError("No se pudo generar la vista previa")
+    return encoded.tobytes()
+
+
+def detect_image(content: bytes) -> DetectedImage:
+    dataset = None
+    try:
+        dataset = pydicom.dcmread(BytesIO(content), force=False)
+        image = _dicom_pixels(dataset)
+        file_kind = "DICOM"
+        media_type = "application/dicom"
+    except Exception:
+        image = read_raster(content)
+        file_kind = "RASTER"
+        media_type = "image/png" if content.startswith(b"\x89PNG\r\n\x1a\n") else "image/jpeg"
+    exam_date = None
+    if dataset is not None:
+        raw_date = str(getattr(dataset, "StudyDate", "") or getattr(dataset, "AcquisitionDate", ""))
+        if len(raw_date) == 8 and raw_date.isdigit():
+            exam_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+    return DetectedImage(
+        image=image,
+        file_kind=file_kind,
+        media_type=media_type,
+        exam_date=exam_date,
+        preview_png=_png_bytes(image, 1200, False),
+        external_review_png=_png_bytes(image, 768, True),
+        input_hash=hashlib.sha256(content).hexdigest(),
+    )
 
 
 def read_raster(content: bytes) -> np.ndarray:
@@ -138,4 +212,3 @@ def overlay_base64(grayscale: np.ndarray, heatmap: np.ndarray) -> str:
     if not ok:
         raise RuntimeError("No se pudo codificar Grad-CAM")
     return base64.b64encode(encoded.tobytes()).decode("ascii")
-

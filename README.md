@@ -35,6 +35,28 @@ la comprobación SHA-256 antes de iniciar inferencia.
 
 5. Abra `http://localhost:3000`.
 
+### Servicios opcionales de automatización
+
+El formulario puede completar nombres, apellidos, sexo y nacimiento mediante
+PeruDevs cuando el usuario pulsa **Autocompletar**. También puede revisar la
+imagen con OpenRouter y `google/gemini-2.5-flash-lite` antes de almacenarla. Las
+claves se configuran exclusivamente en `.env`:
+
+```text
+PERUDEVS_API_KEY=...
+OPENROUTER_ENABLED=true
+OPENROUTER_API_KEY=...
+```
+
+El navegador nunca recibe esas claves. La revisión visual envía solamente una
+miniatura PNG reducida, sin etiquetas DICOM y con sus bordes enmascarados; no
+envía el archivo DICOM original. Se solicita una ruta sin retención ni
+recolección de datos. El resultado solo filtra y sugiere formato/orientación:
+no estima KL, no diagnostica y siempre puede requerir revisión humana.
+
+No use esos servicios con información clínica identificable hasta que la
+institución autorice expresamente a ambos proveedores y el flujo de datos.
+
 No es necesario instalar Node, Python, crear una `venv` ni instalar PostgreSQL
 en la laptop: esas versiones y dependencias se ejecutan dentro de los
 contenedores. Las credenciales iniciales están en `.env`; en el primer acceso la
@@ -49,7 +71,8 @@ docker compose start
 
 ## Verificación local
 
-El smoke test automatizado recorre autenticación, paciente sintético, carga PNG,
+El smoke test automatizado recorre autenticación, paciente sintético, revisión
+visual de carga PNG,
 CNN, Grad-CAM, revisión clínica, XGBoost, LSTM y reporte PDF:
 
 ```bash

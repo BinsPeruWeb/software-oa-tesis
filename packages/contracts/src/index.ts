@@ -29,6 +29,22 @@ export enum JobStatus {
   FAILED = "FAILED",
 }
 
+export type ImageReviewStatus = "ACCEPTED" | "REJECTED" | "REVIEW_REQUIRED" | "UNAVAILABLE";
+export type ImageLayout = "bilateral" | "single" | "uncertain";
+
+export interface ImagePreflightResult {
+  preflightId: string;
+  fileKind: "DICOM" | "RASTER";
+  mediaType: "application/dicom" | "image/png" | "image/jpeg";
+  examDate: string | null;
+  previewDataUrl: string;
+  reviewStatus: ImageReviewStatus;
+  suggestedLayout: ImageLayout;
+  supported: boolean;
+  model: string;
+  costUsd: number | null;
+}
+
 export interface ProbabilityMap {
   KL0: number;
   KL1: number;
@@ -97,4 +113,3 @@ export interface BinaryRiskResult {
 
 export const RESEARCH_WARNING =
   "Uso experimental y de apoyo; requiere interpretación del traumatólogo. No constituye una indicación quirúrgica.";
-

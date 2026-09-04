@@ -2,6 +2,8 @@ import { BadRequestException, Body, Controller, Get, Injectable, Param, Post, Qu
 import { randomUUID } from 'node:crypto';
 import { AuthUser, CsrfGuard, CurrentUser, SessionGuard } from './auth';
 import { AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { PeruDevsService } from './identity';
+import { cellphone, dateOfBirth, dni, email, isoDate, medicalRecord, personName, text, uuid } from './validation';
 
 type PatientInput = {
   medicalRecordNumber: string; dni: string; names: string; surnames: string;
@@ -18,10 +20,13 @@ export class PatientsService {
   constructor(private readonly db: DatabaseService, private readonly crypto: CryptoService, private readonly audit: AuditService) {}
 
   private validate(input: PatientInput) {
-    if (!input.medicalRecordNumber?.trim() || !input.dni?.trim() || !input.names?.trim() || !input.surnames?.trim() || !input.phone?.trim()) {
-      throw new BadRequestException('Historia clínica, DNI, nombres, apellidos y teléfono son obligatorios');
-    }
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.birthDate) || Number.isNaN(Date.parse(input.birthDate))) throw new BadRequestException('Fecha de nacimiento inválida');
+    input.medicalRecordNumber = medicalRecord(input.medicalRecordNumber);
+    input.dni = dni(input.dni);
+    input.names = personName(input.names, 'Nombres');
+    input.surnames = personName(input.surnames, 'Apellidos');
+    input.birthDate = dateOfBirth(input.birthDate);
+    input.phone = cellphone(input.phone);
+    input.email = email(input.email);
     if (![null, 'female', 'male'].includes(input.sex)) throw new BadRequestException('Sexo inválido');
   }
 
@@ -68,6 +73,7 @@ export class PatientsService {
   }
 
   async get(id: string, actor: AuthUser) {
+    id = uuid(id, 'Paciente');
     const result = await this.db.query<PatientRow>(
       `SELECT p.*,c.phone_cipher,c.email_cipher FROM patients p JOIN patient_contacts c ON c.patient_id=p.id WHERE p.id=$1`, [id],
     );
@@ -77,8 +83,8 @@ export class PatientsService {
   }
 
   async search(identifier: string, actor: AuthUser) {
-    if (!identifier?.trim()) throw new BadRequestException('Ingrese DNI o historia clínica exactos');
-    const index = this.crypto.blindIndex(identifier);
+    const normalized = text(identifier, 'DNI o historia clínica', 1, 30);
+    const index = this.crypto.blindIndex(normalized);
     const result = await this.db.query<PatientRow>(
       `SELECT p.*,c.phone_cipher,c.email_cipher FROM patients p JOIN patient_contacts c ON c.patient_id=p.id
        WHERE p.dni_hmac=$1 OR p.medical_record_hmac=$1 LIMIT 1`, [index],
@@ -91,7 +97,10 @@ export class PatientsService {
 @Controller('api/patients')
 @UseGuards(SessionGuard, CsrfGuard)
 export class PatientsController {
-  constructor(private readonly patients: PatientsService, private readonly db: DatabaseService, private readonly audit: AuditService) {}
+  constructor(
+    private readonly patients: PatientsService, private readonly identity: PeruDevsService,
+    private readonly db: DatabaseService, private readonly audit: AuditService,
+  ) {}
 
   @Post()
   create(@Body() body: PatientInput, @CurrentUser() user: AuthUser) { return this.patients.create(body, user); }
@@ -99,12 +108,20 @@ export class PatientsController {
   @Get('search')
   search(@Query('identifier') identifier: string, @CurrentUser() user: AuthUser) { return this.patients.search(identifier, user); }
 
+  @Get('lookup-dni')
+  async lookupDni(@Query('dni') document: string, @CurrentUser() user: AuthUser) {
+    const value = await this.identity.lookup(dni(document), user.id);
+    await this.audit.record(user.id, 'DNI_LOOKUP', 'ExternalIdentityLookup', undefined, { found: value.found });
+    return value;
+  }
+
   @Get(':id')
   get(@Param('id') id: string, @CurrentUser() user: AuthUser) { return this.patients.get(id, user); }
 
   @Post(':id/episodes')
   async episode(@Param('id') patientId: string, @Body() body: { openedAt?: string }, @CurrentUser() user: AuthUser) {
-    const openedAt = body.openedAt ?? new Date().toISOString().slice(0, 10);
+    patientId = uuid(patientId, 'Paciente');
+    const openedAt = isoDate(body.openedAt ?? new Date().toISOString().slice(0, 10), 'Fecha del episodio');
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO clinical_episodes(patient_id,opened_at,created_by) VALUES($1,$2,$3) RETURNING id`,
       [patientId, openedAt, user.id],
@@ -113,4 +130,3 @@ export class PatientsController {
     return { id: result.rows[0].id, patientId, openedAt, status: 'OPEN' };
   }
 }
-

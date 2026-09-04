@@ -12,8 +12,10 @@
 - [ ] MFA verificado para todos los usuarios activos.
 - [ ] Revisión de roles, bloqueo, expiración, CSRF y fuerza bruta.
 - [ ] Prueba automatizada de ausencia de PHI en logs/errores/caché.
+- [ ] PeruDevs autorizado para procesar DNI y política contractual revisada.
+- [ ] OpenRouter y el proveedor visual autorizados; retención/ZDR y región documentadas.
+- [ ] Radiografías revisadas para texto identificable incrustado fuera de los bordes.
 - [ ] Benchmark CPU y límites de memoria/costo registrados.
 - [ ] Staging aislado y limitado a datos sintéticos/desidentificados.
 
 Hasta completar todos los puntos, producción debe permanecer bloqueada.
-

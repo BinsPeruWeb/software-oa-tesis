@@ -4,6 +4,7 @@ import PDFDocument from 'pdfkit';
 import { createHash } from 'node:crypto';
 import { AuthUser, CsrfGuard, CurrentUser, SessionGuard } from './auth';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { boundedNumber, isoDate, uuid } from './validation';
 
 type Flags = { obesity: boolean; diabetes: boolean; hypertension: boolean; nicotineUse: boolean; traumaLowerExtremity: boolean };
 type ContextRow = {
@@ -18,8 +19,7 @@ const requiredBoolean = (value: unknown, name: string) => {
 };
 const validatePain = (value: unknown) => {
   if (value === null || value === undefined) return null;
-  if (typeof value !== 'number' || value < 0 || value > 10) throw new BadRequestException('Dolor debe estar entre 0 y 10 o no disponible');
-  return value;
+  return boundedNumber(value, 'Dolor', 0, 10);
 };
 const yearsAt = (birth: string, exam: string) => (Date.parse(exam) - Date.parse(birth)) / (365.25 * 86400_000);
 
@@ -43,6 +43,7 @@ export class ClinicalController {
 
   @Post('observations/:id/clinical')
   async clinical(@Param('id') observationId: string, @Body() body: any, @CurrentUser() user: AuthUser) {
+    observationId = uuid(observationId, 'Observación');
     const flags = this.flags(body); const pain = validatePain(body.painScore);
     await this.db.query(
       `INSERT INTO clinical_observations(knee_observation_id,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,recorded_by)
@@ -58,10 +59,11 @@ export class ClinicalController {
 
   @Post('patients/:patientId/prior-exams')
   async prior(@Param('patientId') patientId: string, @Body() body: any, @CurrentUser() user: AuthUser) {
+    patientId = uuid(patientId, 'Paciente');
     const flags = this.flags(body); const pain = validatePain(body.painScore);
     if (!['L', 'R'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.examDate ?? '')) throw new BadRequestException('Fecha inválida');
-    if (!Number.isInteger(body.confirmedKl) || body.confirmedKl < 0 || body.confirmedKl > 4) throw new BadRequestException('KL confirmado inválido');
+    body.examDate = isoDate(body.examDate, 'Fecha del antecedente');
+    boundedNumber(body.confirmedKl, 'KL confirmado', 0, 4, true);
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO prior_exams(patient_id,knee_side,exam_date,confirmed_kl,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,recorded_by)
        VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
@@ -109,6 +111,7 @@ export class ClinicalController {
 
   @Post('observations/:id/risks/arthroplasty')
   async arthroplasty(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
+    observationId = uuid(observationId, 'Observación');
     const current = await this.currentContext(observationId);
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
     const sex = current.sex_cipher ? this.crypto.decryptText(current.sex_cipher, `patient:${current.patient_id}:sex`) : null;
@@ -130,6 +133,7 @@ export class ClinicalController {
 
   @Post('observations/:id/risks/progression')
   async progression(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
+    observationId = uuid(observationId, 'Observación');
     const current = await this.currentContext(observationId);
     if (current.confirmed_kl === 4) return { available: false, reason: 'LSTM no disponible para t2 KL4' };
     const prior = (await this.db.query<any>(
@@ -168,6 +172,7 @@ export class ClinicalController {
 
   @Post('episodes/:episodeId/reports')
   async report(@Param('episodeId') episodeId: string, @CurrentUser() user: AuthUser) {
+    episodeId = uuid(episodeId, 'Episodio');
     const row = (await this.db.query<any>(
       `SELECT e.patient_id,p.names_cipher,p.surnames_cipher,p.medical_record_cipher FROM clinical_episodes e
        JOIN patients p ON p.id=e.patient_id WHERE e.id=$1`, [episodeId],
@@ -215,6 +220,7 @@ export class ClinicalController {
 
   @Get('reports/:id/download')
   async download(@Param('id') id: string, @CurrentUser() user: AuthUser, @Res() response: Response) {
+    id = uuid(id, 'Reporte');
     const row = (await this.db.query<{ storage_key: string }>(
       `SELECT a.storage_key FROM draft_reports r JOIN stored_assets a ON a.id=r.asset_id WHERE r.id=$1`, [id],
     )).rows[0];

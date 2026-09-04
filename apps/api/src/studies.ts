@@ -6,6 +6,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { createHash, randomUUID } from 'node:crypto';
 import { AuthUser, CsrfGuard, CurrentUser, SessionGuard } from './auth';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { boundedNumber, isoDate, optionalText, text, uuid } from './validation';
 
 const SOURCE_TYPES = ['DICOM_BILATERAL', 'RASTER_BILATERAL', 'RASTER_SINGLE_ROI'] as const;
 const asBool = (value: unknown, name: string) => {
@@ -19,6 +20,19 @@ type StudyJobRow = {
   source_type: typeof SOURCE_TYPES[number]; projection_confirmed: boolean; weight_bearing_confirmed: boolean;
   orientation_confirmed: boolean; metadata_inverted: boolean; horizontal_flip: boolean;
   storage_key: string; content_type: string; patient_id: string; created_by: string; job_type: 'KL' | 'GRADCAM'; attempts: number;
+};
+
+type MlPreflight = {
+  input_hash: string; file_kind: 'DICOM' | 'RASTER'; media_type: string; exam_date: string | null;
+  preview_base64_png: string; review_status: 'ACCEPTED' | 'REJECTED' | 'REVIEW_REQUIRED' | 'UNAVAILABLE';
+  suggested_layout: 'bilateral' | 'single' | 'uncertain'; suggested_source_type: string | null;
+  supported: boolean; assessment: Record<string, unknown> | null; provider_model: string;
+  provider_request_id: string | null; cost_usd: number | null;
+  external_preview_metadata_stripped: boolean; external_preview_borders_masked: boolean;
+};
+type PreflightRow = {
+  id: string; input_hash: string; file_kind: 'DICOM' | 'RASTER'; media_type: string;
+  review_status: MlPreflight['review_status']; suggested_layout: MlPreflight['suggested_layout']; supported: boolean;
 };
 
 @Injectable()
@@ -148,10 +162,66 @@ export class InferenceWorker implements OnModuleInit, OnModuleDestroy {
 @Controller('api')
 @UseGuards(SessionGuard, CsrfGuard)
 export class StudiesController {
+  private readonly preflightWindows = new Map<string, { count: number; reset: number }>();
   constructor(
     private readonly db: DatabaseService, private readonly assets: AssetService,
     private readonly crypto: CryptoService, private readonly audit: AuditService,
   ) {}
+
+  @Post('studies/preflight')
+  @UseInterceptors(FileInterceptor('image', { limits: { fileSize: 64 * 1024 * 1024, files: 1 } }))
+  async preflight(
+    @UploadedFile() image: { buffer: Buffer; mimetype: string; originalname: string },
+    @CurrentUser() user: AuthUser,
+  ) {
+    if (!image?.buffer?.length) throw new BadRequestException('Seleccione una imagen');
+    text(image.originalname, 'Nombre del archivo', 1, 255);
+    const now = Date.now();
+    const existing = this.preflightWindows.get(user.id);
+    const window = !existing || existing.reset < now ? { count: 0, reset: now + 60_000 } : existing;
+    window.count += 1; this.preflightWindows.set(user.id, window);
+    if (window.count > 10) throw new BadRequestException('Demasiadas verificaciones de imagen; espere un minuto');
+    const form = new FormData();
+    const bytes = image.buffer.buffer.slice(image.buffer.byteOffset, image.buffer.byteOffset + image.buffer.byteLength) as ArrayBuffer;
+    form.append('image', new Blob([bytes], { type: image.mimetype || 'application/octet-stream' }), image.originalname);
+    let response: Response;
+    try {
+      response = await fetch(`${process.env.ML_SERVICE_URL}/v1/images/preflight`, {
+        method: 'POST', body: form, signal: AbortSignal.timeout(40_000),
+        headers: { 'x-service-token': process.env.SERVICE_TOKEN ?? '', 'x-correlation-id': randomUUID() },
+      });
+    } catch {
+      throw new BadRequestException('No fue posible verificar la imagen en este momento');
+    }
+    const result = await response.json() as MlPreflight | { detail?: unknown };
+    if (!response.ok || !('input_hash' in result)) throw new BadRequestException('El archivo no es DICOM, PNG o JPG compatible');
+    const localHash = createHash('sha256').update(image.buffer).digest('hex');
+    if (result.input_hash !== localHash) throw new BadRequestException('Falló la comprobación de integridad de la imagen');
+    const inserted = await this.db.query<{ id: string }>(
+      `INSERT INTO image_preflight_reviews(input_hash,file_kind,media_type,review_status,suggested_layout,supported,
+       provider_model,provider_request_id,cost_usd,assessment,created_by)
+       VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+      [localHash, result.file_kind, result.media_type, result.review_status, result.suggested_layout, result.supported,
+        result.provider_model, result.provider_request_id, result.cost_usd, JSON.stringify(result.assessment), user.id],
+    );
+    await this.audit.record(user.id, 'IMAGE_PREFLIGHT', 'ImagePreflightReview', inserted.rows[0].id, {
+      fileKind: result.file_kind, status: result.review_status, model: result.provider_model,
+    });
+    return {
+      preflightId: inserted.rows[0].id,
+      fileKind: result.file_kind,
+      mediaType: result.media_type,
+      examDate: result.exam_date,
+      previewDataUrl: `data:image/png;base64,${result.preview_base64_png}`,
+      reviewStatus: result.review_status,
+      suggestedLayout: result.suggested_layout,
+      supported: result.supported,
+      assessment: result.assessment,
+      model: result.provider_model,
+      costUsd: result.cost_usd,
+      privacy: { metadataStripped: true, bordersMasked: true },
+    };
+  }
 
   @Post('episodes/:episodeId/studies')
   @UseInterceptors(FileInterceptor('image', { limits: { fileSize: 64 * 1024 * 1024, files: 1 } }))
@@ -160,44 +230,70 @@ export class StudiesController {
     @Body() body: Record<string, string>, @CurrentUser() user: AuthUser,
   ) {
     if (!image?.buffer?.length) throw new BadRequestException('Imagen requerida');
-    if (!SOURCE_TYPES.includes(body.sourceType as any)) throw new BadRequestException('Tipo de entrada inválido');
+    episodeId = uuid(episodeId, 'Episodio');
+    const originalName = text(image.originalname, 'Nombre del archivo', 1, 255);
+    const preflightId = uuid(body.preflightId, 'Verificación de imagen');
+    const preflight = (await this.db.query<PreflightRow>(
+      `SELECT id,input_hash,file_kind,media_type,review_status,suggested_layout,supported
+       FROM image_preflight_reviews WHERE id=$1 AND created_by=$2 AND expires_at>now()`, [preflightId, user.id],
+    )).rows[0];
+    if (!preflight) throw new BadRequestException('La verificación de imagen expiró; vuelva a seleccionar el archivo');
+    if (preflight.input_hash !== createHash('sha256').update(image.buffer).digest('hex')) {
+      throw new BadRequestException('El archivo cambió después de su verificación');
+    }
+    if (!['bilateral', 'single'].includes(body.imageLayout)) throw new BadRequestException('Indique si la imagen contiene una o ambas rodillas');
+    if (preflight.file_kind === 'DICOM' && body.imageLayout === 'single') {
+      throw new BadRequestException('Actualmente el DICOM debe contener ambas rodillas');
+    }
+    const sourceType = preflight.file_kind === 'DICOM'
+      ? 'DICOM_BILATERAL'
+      : body.imageLayout === 'bilateral' ? 'RASTER_BILATERAL' : 'RASTER_SINGLE_ROI';
+    if (!SOURCE_TYPES.includes(sourceType)) throw new BadRequestException('Tipo de entrada inválido');
     if (!['L', 'R'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(body.examDate ?? '')) throw new BadRequestException('Fecha inválida');
+    const examDate = isoDate(body.examDate, 'Fecha del examen');
+    if (!asBool(body.acquisitionConfirmed, 'radiografía frontal con apoyo de peso')) {
+      throw new BadRequestException('Debe confirmar que la radiografía es frontal y fue tomada con apoyo de peso');
+    }
+    const overrideReason = optionalText(body.manualOverrideReason, 'Motivo de revisión manual', 500);
+    if (preflight.review_status === 'REJECTED' && (!overrideReason || overrideReason.length < 20)) {
+      throw new BadRequestException('La revisión automática rechazó el archivo; se requiere un motivo clínico de al menos 20 caracteres');
+    }
     const episode = (await this.db.query<{ patient_id: string }>('SELECT patient_id FROM clinical_episodes WHERE id=$1 AND status=\'OPEN\'', [episodeId])).rows[0];
     if (!episode) throw new BadRequestException('Episodio no encontrado o cerrado');
-    const confirmation = {
-      projection: asBool(body.projectionConfirmed, 'proyección AP'),
-      weight: asBool(body.weightBearingConfirmed, 'soporte de peso'),
-      orientation: asBool(body.orientationConfirmed, 'orientación'),
-    };
+    const confirmation = { projection: true, weight: true, orientation: true };
     const stored = await this.assets.write(image.buffer);
     const ids = await this.db.transaction(async (client) => {
       const asset = await client.query<{ id: string }>(
         `INSERT INTO stored_assets(patient_id,kind,storage_key,content_type,original_name_cipher,plaintext_sha256,size_bytes,created_by)
          VALUES($1,'RADIOGRAPH',$2,$3,$4,$5,$6,$7) RETURNING id`,
-        [episode.patient_id, stored.storageKey, image.mimetype, this.crypto.encrypt(image.originalname, `asset:${stored.storageKey}:name`),
+        [episode.patient_id, stored.storageKey, preflight.media_type, this.crypto.encrypt(originalName, `asset:${stored.storageKey}:name`),
           createHash('sha256').update(image.buffer).digest('hex'), image.buffer.length, user.id],
       );
       const study = await client.query<{ id: string }>(
         `INSERT INTO radiographic_studies(episode_id,asset_id,exam_date,source_type,projection_confirmed,
-         weight_bearing_confirmed,orientation_confirmed,metadata_inverted,horizontal_flip,created_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`,
-        [episodeId, asset.rows[0].id, body.examDate, body.sourceType, confirmation.projection, confirmation.weight,
-          confirmation.orientation, asBool(body.metadataInverted ?? 'false', 'polaridad'),
-          asBool(body.horizontalFlip ?? 'false', 'corrección horizontal'), user.id],
+         weight_bearing_confirmed,orientation_confirmed,metadata_inverted,horizontal_flip,created_by,preflight_id)
+         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+        [episodeId, asset.rows[0].id, examDate, sourceType, confirmation.projection, confirmation.weight,
+          confirmation.orientation, preflight.file_kind === 'DICOM' ? asBool(body.invertPolarity ?? 'false', 'polaridad') : false,
+          body.imageLayout === 'bilateral' ? asBool(body.swapSides ?? 'false', 'intercambio de lados') : false, user.id, preflight.id],
       );
       const observation = await client.query<{ id: string }>(
         'INSERT INTO knee_observations(study_id,knee_side) VALUES($1,$2) RETURNING id', [study.rows[0].id, body.kneeSide],
       );
       return { studyId: study.rows[0].id, observationId: observation.rows[0].id };
     });
-    await this.audit.record(user.id, 'STUDY_UPLOADED', 'RadiographicStudy', ids.studyId, { sourceType: body.sourceType, kneeSide: body.kneeSide });
+    await this.audit.record(user.id, 'STUDY_UPLOADED', 'RadiographicStudy', ids.studyId, {
+      sourceType, kneeSide: body.kneeSide, preflightStatus: preflight.review_status, manualOverride: Boolean(overrideReason),
+    });
     return ids;
   }
 
   @Post('observations/:observationId/inference')
   async queue(@Param('observationId') observationId: string, @Body() body: { idempotencyKey?: string }, @CurrentUser() user: AuthUser) {
-    const key = `kl:${observationId}:${body.idempotencyKey?.trim() || 'default'}`;
+    observationId = uuid(observationId, 'Observación');
+    const suppliedKey = optionalText(body.idempotencyKey, 'Clave de idempotencia', 80) ?? 'default';
+    if (!/^[A-Za-z0-9._:-]+$/.test(suppliedKey)) throw new BadRequestException('Clave de idempotencia inválida');
+    const key = `kl:${observationId}:${suppliedKey}`;
     const result = await this.db.query<{ id: string; status: string }>(
       `INSERT INTO inference_jobs(observation_id,job_type,idempotency_key,created_by) VALUES($1,'KL',$2,$3)
        ON CONFLICT(idempotency_key) DO UPDATE SET status=CASE WHEN inference_jobs.status='FAILED' THEN 'QUEUED' ELSE inference_jobs.status END,
@@ -210,6 +306,7 @@ export class StudiesController {
 
   @Get('inference-jobs/:id')
   async job(@Param('id') id: string) {
+    id = uuid(id, 'Trabajo');
     const result = await this.db.query(
       `SELECT j.id,j.status,j.job_type "jobType",j.error_code "errorCode",j.correlation_id "correlationId",
        p.id "predictionId",p.probabilities,p.model_version "modelVersion",p.artifact_hashes "artifactHashes",
@@ -222,15 +319,15 @@ export class StudiesController {
 
   @Post('predictions/:id/review')
   async review(@Param('id') predictionId: string, @Body() body: { decision?: string; confirmedKl?: number | null; reason?: string }, @CurrentUser() user: AuthUser) {
+    predictionId = uuid(predictionId, 'Predicción');
     if (!['CONFIRMED', 'CORRECTED', 'REJECTED'].includes(body.decision ?? '')) throw new BadRequestException('Decisión inválida');
     const rejected = body.decision === 'REJECTED';
-    if ((!rejected && !Number.isInteger(body.confirmedKl)) || (!rejected && (body.confirmedKl! < 0 || body.confirmedKl! > 4))) {
-      throw new BadRequestException('KL confirmado entre 0 y 4 requerido');
-    }
+    if (!rejected) boundedNumber(body.confirmedKl, 'KL confirmado', 0, 4, true);
+    const reason = optionalText(body.reason, 'Motivo de revisión', 1000);
     const result = await this.db.query<{ id: string }>(
       `INSERT INTO clinician_reviews(prediction_id,decision,confirmed_kl,reason,reviewed_by)
        SELECT id,$2,$3,$4,$5 FROM model_predictions WHERE id=$1 AND model_name='Ensemble-v2' RETURNING id`,
-      [predictionId, body.decision, rejected ? null : body.confirmedKl, body.reason?.slice(0, 1000) ?? null, user.id],
+      [predictionId, body.decision, rejected ? null : body.confirmedKl, reason, user.id],
     );
     if (!result.rows[0]) throw new BadRequestException('Predicción KL no encontrada');
     await this.audit.record(user.id, 'PREDICTION_REVIEWED', 'ClinicianReview', result.rows[0].id, { decision: body.decision });
@@ -239,6 +336,7 @@ export class StudiesController {
 
   @Get('predictions/:id/explanations')
   async explanations(@Param('id') predictionId: string) {
+    predictionId = uuid(predictionId, 'Predicción');
     const result = await this.db.query<{ id: string; backbone: string; target_kl: number; storage_key: string }>(
       `SELECT g.id,g.backbone,g.target_kl,a.storage_key FROM gradcam_explanations g
        JOIN stored_assets a ON a.id=g.asset_id WHERE g.prediction_id=$1 ORDER BY g.backbone`, [predictionId],

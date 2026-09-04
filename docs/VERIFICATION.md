@@ -56,3 +56,22 @@ node scripts/smoke-test.mjs
 Estos pendientes no impiden probar ahora el prototipo local con datos sintéticos
 o correctamente desidentificados, pero sí impiden declararlo apto para atención
 clínica o producción.
+
+## Automatización de ingreso — 2026-09-04
+
+- OpenRouter respondió correctamente con `google/gemini-2.5-flash-lite`, salida
+  estructurada, identificador de solicitud y costo informado, usando una imagen
+  sintética y la ruta de proveedor sin recolección/ZDR.
+- PeruDevs respondió HTTP 200 con JSON usando una consulta técnica; no se
+  imprimió ni almacenó el resultado personal devuelto.
+- Suite NestJS: 6/6 pruebas aprobadas, incluidas DNI, celular, nombres, correo,
+  historia clínica y fechas.
+- Suite ML en Python 3.12/CPU: 13/13 pruebas aprobadas, incluida conversión DICOM
+  a PNG sin metadatos y enmascaramiento de bordes.
+- Compilación completa de contratos, React y NestJS: aprobada.
+- Compose reconstruido; PostgreSQL, FastAPI y `web-api` iniciaron sanos y la
+  migración de prevalidación fue aplicada.
+
+El smoke test completo no se volvió a ejecutar porque el administrador local ya
+tiene MFA habilitado y no se proporcionó `SMOKE_TOTP_SECRET`. Se detuvo en el
+inicio de sesión, sin cambiar ni deshabilitar el MFA existente.

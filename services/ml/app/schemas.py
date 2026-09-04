@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
 
@@ -19,6 +20,24 @@ class ImageSourceType(StrEnum):
     DICOM_BILATERAL = "DICOM_BILATERAL"
     RASTER_BILATERAL = "RASTER_BILATERAL"
     RASTER_SINGLE_ROI = "RASTER_SINGLE_ROI"
+
+
+class ImagePreflightResponse(StrictModel):
+    input_hash: str
+    file_kind: Literal["DICOM", "RASTER"]
+    media_type: Literal["application/dicom", "image/png", "image/jpeg"]
+    exam_date: str | None
+    preview_base64_png: str
+    review_status: Literal["ACCEPTED", "REJECTED", "REVIEW_REQUIRED", "UNAVAILABLE"]
+    suggested_layout: Literal["bilateral", "single", "uncertain"]
+    suggested_source_type: ImageSourceType | None
+    supported: bool
+    assessment: dict | None
+    provider_model: str
+    provider_request_id: str | None
+    cost_usd: float | None
+    external_preview_metadata_stripped: bool
+    external_preview_borders_masked: bool
 
 
 class Sex(StrEnum):

@@ -138,21 +138,27 @@ async function main() {
 
   const me = (await request('/api/auth/me')).result;
   const unique = Date.now().toString();
+  const syntheticDni = unique.slice(-8);
   const patient = (await request('/api/patients', { method: 'POST', body: {
-    medicalRecordNumber: `SMOKE-HC-${unique}`, dni: `SMOKE-DNI-${unique}`,
+    medicalRecordNumber: `SMOKE-HC-${unique}`, dni: syntheticDni,
     names: 'Paciente', surnames: 'Sintético', birthDate: '1960-01-15', sex: 'female',
-    phone: '+000000000', email: null,
+    phone: '912345678', email: null,
   } })).result;
-  const search = (await request(`/api/patients/search?identifier=${encodeURIComponent(`SMOKE-DNI-${unique}`)}`)).result;
+  const search = (await request(`/api/patients/search?identifier=${syntheticDni}`)).result;
   const episode = (await request(`/api/patients/${patient.id}/episodes`, {
     method: 'POST', body: { openedAt: '2026-09-04' },
   })).result;
+  const syntheticImage = syntheticKneePng();
+  const checkForm = new FormData();
+  checkForm.append('image', new Blob([syntheticImage], { type: 'image/png' }), 'synthetic-knee.png');
+  const preflight = (await request('/api/studies/preflight', { method: 'POST', form: checkForm })).result;
   const form = new FormData();
-  form.append('image', new Blob([syntheticKneePng()], { type: 'image/png' }), 'synthetic-knee.png');
-  form.append('sourceType', 'RASTER_SINGLE_ROI'); form.append('kneeSide', 'R');
-  form.append('examDate', '2026-09-04'); form.append('projectionConfirmed', 'true');
-  form.append('weightBearingConfirmed', 'true'); form.append('orientationConfirmed', 'true');
-  form.append('metadataInverted', 'false'); form.append('horizontalFlip', 'false');
+  form.append('image', new Blob([syntheticImage], { type: 'image/png' }), 'synthetic-knee.png');
+  form.append('preflightId', preflight.preflightId);
+  form.append('imageLayout', preflight.suggestedLayout === 'bilateral' ? 'bilateral' : 'single');
+  form.append('kneeSide', 'R'); form.append('examDate', '2026-09-04');
+  form.append('acquisitionConfirmed', 'true'); form.append('invertPolarity', 'false'); form.append('swapSides', 'false');
+  if (preflight.reviewStatus === 'REJECTED') form.append('manualOverrideReason', 'Imagen sintética controlada para la prueba automatizada');
   const study = (await request(`/api/episodes/${episode.id}/studies`, { method: 'POST', form })).result;
   const queued = (await request(`/api/observations/${study.observationId}/inference`, {
     method: 'POST', body: { idempotencyKey: unique },
@@ -195,6 +201,7 @@ async function main() {
   const mfaResetForManualEnrollment = resetDevelopmentMfa();
   console.log(JSON.stringify({
     ok: true, role: me.role, patientSearch: search?.id === patient.id,
+    imagePreflight: { status: preflight.reviewStatus, model: preflight.model, costReported: preflight.costUsd !== null },
     kl: { status: job.status, predicted: predictedKl, probabilities: Object.keys(job.probabilities.ensemble ?? {}).length, device: job.device },
     gradCamCount: explanations.length,
     xgboost: { probability: arthroplasty.probability, featureCount: Object.keys(arthroplasty.features ?? {}).length, threshold: arthroplasty.threshold },

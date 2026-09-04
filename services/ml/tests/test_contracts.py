@@ -9,7 +9,7 @@ from pydicom.uid import ExplicitVRLittleEndian
 from pydantic import ValidationError
 
 from app.engine import XGB_FEATURES, build_arthroplasty_features
-from app.imaging import extract_bilateral_roi, normalize_pixels, read_dicom, read_raster
+from app.imaging import detect_image, extract_bilateral_roi, normalize_pixels, read_dicom, read_raster
 from app.schemas import ArthroplastyRequest, ProgressionRequest
 
 
@@ -99,6 +99,32 @@ def test_dicom_monochrome1_polarity_is_applied_without_exposing_metadata():
     assert decoded[0, 0] > decoded[-1, -1]
 
 
+def test_preflight_detects_dicom_renders_png_and_masks_possible_border_text():
+    meta = FileMetaDataset()
+    meta.TransferSyntaxUID = ExplicitVRLittleEndian
+    dataset = FileDataset(None, {}, file_meta=meta, preamble=b"\0" * 128)
+    dataset.Rows, dataset.Columns = 100, 200
+    dataset.SamplesPerPixel = 1
+    dataset.PhotometricInterpretation = "MONOCHROME2"
+    dataset.BitsAllocated = dataset.BitsStored = 16
+    dataset.HighBit = 15
+    dataset.PixelRepresentation = 0
+    dataset.PatientName = "PHI^MUST_NOT_LEAVE"
+    dataset.StudyDate = "20260904"
+    dataset.PixelData = np.arange(100 * 200, dtype=np.uint16).reshape(100, 200).tobytes()
+    stream = BytesIO()
+    dataset.save_as(stream)
+
+    detected = detect_image(stream.getvalue())
+    external = cv2.imdecode(np.frombuffer(detected.external_review_png, np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert detected.file_kind == "DICOM"
+    assert detected.media_type == "application/dicom"
+    assert detected.exam_date == "2026-09-04"
+    assert detected.preview_png.startswith(b"\x89PNG")
+    assert np.all(external[:10, :] == 0)
+    assert b"PHI^MUST_NOT_LEAVE" not in detected.external_review_png
+
+
 def test_integrity_rejects_modified_artifact(tmp_path, monkeypatch):
     from app import integrity
     artifact = tmp_path / "model.bin"
@@ -113,4 +139,3 @@ def test_integrity_rejects_modified_artifact(tmp_path, monkeypatch):
     artifact.write_bytes(b"modified")
     with pytest.raises(RuntimeError, match="Hash inválido"):
         integrity.verify_model_package(tmp_path)
-

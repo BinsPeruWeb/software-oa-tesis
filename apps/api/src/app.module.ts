@@ -4,6 +4,7 @@ import { AdminController } from './admin';
 import { AdminGuard, AuthController, AuthService, CsrfGuard, SessionGuard } from './auth';
 import { ClinicalController } from './clinical';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { PeruDevsService } from './identity';
 import { PatientsController, PatientsService } from './patients';
 import { InferenceWorker, StudiesController } from './studies';
 
@@ -13,8 +14,7 @@ import { InferenceWorker, StudiesController } from './studies';
   providers: [
     DatabaseService, CryptoService, AssetService, AuditService,
     AuthService, SessionGuard, CsrfGuard, AdminGuard,
-    PatientsService, InferenceWorker,
+    PatientsService, PeruDevsService, InferenceWorker,
   ],
 })
 export class AppModule {}
-

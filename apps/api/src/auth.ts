@@ -7,6 +7,7 @@ import argon2 from 'argon2';
 import type { Request, Response } from 'express';
 import { createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
 import { AuditService, CryptoService, DatabaseService } from './infrastructure';
+import { email as validatedEmail } from './validation';
 
 export interface AuthUser { id: string; email: string; displayName: string; role: 'CLINICIAN' | 'ADMIN'; sessionId: string }
 type UserRow = { id: string; email: string; display_name: string; password_hash: string; role_code: AuthUser['role']; active: boolean; failed_attempts: number; locked_until: Date | null };
@@ -168,13 +169,15 @@ export class AuthController {
 
   @Post('login')
   login(@Body() body: { email?: string; password?: string }) {
-    if (!body.email || !body.password) throw new UnauthorizedException('Credenciales requeridas');
-    return this.service.login(body.email, body.password);
+    if (!body.password || body.password.length > 128) throw new UnauthorizedException('Credenciales requeridas');
+    return this.service.login(validatedEmail(body.email, true)!, body.password);
   }
 
   @Post('mfa/verify')
   async verify(@Body() body: { challengeToken?: string; code?: string }, @Res({ passthrough: true }) response: Response) {
-    if (!body.challengeToken || !body.code) throw new UnauthorizedException('Desafío y código requeridos');
+    if (!body.challengeToken || body.challengeToken.length > 4096 || !body.code || !/^\d{6}$/.test(body.code)) {
+      throw new UnauthorizedException('Desafío y código requeridos');
+    }
     const result = await this.service.verifyMfa(body.challengeToken, body.code);
     const secure = process.env.COOKIE_SECURE !== 'false';
     response.cookie('oa_session', result.token, { httpOnly: true, secure, sameSite: 'strict', maxAge: 8 * 3600_000, path: '/' });
