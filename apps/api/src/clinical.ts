@@ -218,7 +218,7 @@ export class ClinicalController {
   async progression(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
     const current = await this.currentContext(observationId, user.id);
-    if (current.confirmed_kl === 4) return { available: false, klOrigin: current.kl_origin, reason: 'LSTM no disponible para t2 KL4' };
+    if (current.confirmed_kl === 4) return { available: false, klOrigin: current.kl_origin, reason: 'No aplicable: el estudio actual (t2) es KL4, el grado máximo de la escala' };
     const prior = (await this.history(current.patient_id, current.knee_side, current.exam_date)).at(-1);
     if (!prior) return { available: false, klOrigin: current.kl_origin, reason: 'Se necesita un estudio anterior de la misma rodilla con una fecha diferente' };
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
@@ -273,6 +273,9 @@ export class ClinicalController {
        ) cr ON true WHERE mp.observation_id=$1 ORDER BY mp.created_at`, [study.observationId],
     )).rows;
     const ensemble = predictions.find((item: any) => item.modelName === 'Ensemble-v2') ?? null;
+    const currentKl = ensemble?.confirmedKl ?? ensemble?.probabilities?.predictedKl;
+    const progression = predictions.find((item: any) => item.modelName === 'LSTM-v2')
+      ?? (currentKl === 4 ? { available: false, reason: 'No aplicable: el estudio actual es KL4, el grado máximo de la escala.' } : null);
     const jobs = (await this.db.query<any>(
       `SELECT id,job_type "jobType",status,error_code "errorCode",started_at "startedAt",finished_at "finishedAt"
        FROM inference_jobs WHERE observation_id=$1 ORDER BY created_at`, [study.observationId],
@@ -285,7 +288,7 @@ export class ClinicalController {
       status: jobs.some((item: any) => item.status === 'FAILED') ? 'FAILED' : ensemble ? (jobs.some((item: any) => item.status !== 'SUCCEEDED') ? 'PROCESSING' : 'COMPLETED') : 'PROCESSING',
       ensemble,
       arthroplasty: predictions.find((item: any) => item.modelName === 'XGBoost-v2') ?? null,
-      progression: predictions.find((item: any) => item.modelName === 'LSTM-v2') ?? null,
+      progression,
       radiologySeconds: ensemble?.latencyMs == null ? null : Number((Number(ensemble.latencyMs) / 1000).toFixed(2)),
       totalProcessingSeconds: Number((elapsed / 1000).toFixed(2)), jobs,
     };

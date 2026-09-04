@@ -110,3 +110,15 @@ deshabilita el MFA del administrador.
 - Creación de una cuenta con contraseña de 7 caracteres: rechazada con HTTP 400.
 - Estado final de prueba: solo permanece el administrador base; no quedan
   sesiones, eventos de auditoría ni registros clínicos de la validación.
+
+## Listado de cuentas y elegibilidad LSTM — 2026-09-04
+
+- El endpoint administrativo de usuarios lista todas las cuentas de acceso,
+  incluidos administradores y médicos, con paginación y búsqueda.
+- Verificación local: 2 cuentas totales; la única cuenta médica aparece tanto
+  en Usuarios como en Médicos.
+- La edición desde Usuarios conserva el rol y los datos profesionales; el alta
+  de médicos continúa disponible exclusivamente en la sección Médicos.
+- Para un estudio actual KL4, la progresión LSTM se presenta como “No
+  aplicable”, porque KL4 es el máximo de la escala y fue excluido como `t2` del
+  entrenamiento.

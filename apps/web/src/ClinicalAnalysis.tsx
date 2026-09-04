@@ -64,7 +64,8 @@ function StudyUpload({ patient, onReady, notify }: { patient: Patient; onReady: 
 }
 
 function RiskResult({ title, value }: { title: string; value: any }) {
-  return <article className="risk-card"><span className="overline">Estimación automática</span><h3>{title}</h3>{!value ? <div className="skeleton-line" /> : value.available === false ? <><Badge tone="neutral">No disponible</Badge><p className="muted">{value.reason}</p></> : <><strong>{percent(value.probability)}</strong><Badge tone={value.screen_positive ? 'warning' : 'success'}>{value.screen_positive ? 'Tamiz positivo' : 'Tamiz negativo'}</Badge><small>Umbral {Number(value.threshold).toFixed(3)} · KL de entrada {value.klOrigin === 'CLINICIAN' ? 'revisado' : 'estimado por el modelo'}</small></>}</article>;
+  const notApplicable = value?.available === false && /KL4|grado máximo/i.test(value.reason ?? '');
+  return <article className="risk-card"><span className="overline">Estimación automática</span><h3>{title}</h3>{!value ? <div className="skeleton-line" /> : value.available === false ? <><Badge tone="neutral">{notApplicable ? 'No aplicable' : 'No disponible'}</Badge><p className="muted">{value.reason}</p></> : <><strong>{percent(value.probability)}</strong><Badge tone={value.screen_positive ? 'warning' : 'success'}>{value.screen_positive ? 'Tamiz positivo' : 'Tamiz negativo'}</Badge><small>Umbral {Number(value.threshold).toFixed(3)} · KL de entrada {value.klOrigin === 'CLINICIAN' ? 'revisado' : 'estimado por el modelo'}</small></>}</article>;
 }
 
 function AutomaticWorkflow({ ids, notify, openAnalysis }: { ids: AnalysisIds; notify: Notify; openAnalysis: (episodeId: string) => void }) {
