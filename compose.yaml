@@ -1,0 +1,94 @@
+name: oa-thesis
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: oa_app
+      POSTGRES_USER: oa_app
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-oa_dev_password}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oa_app -d oa_app"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    networks: [backend]
+
+  ml-inference:
+    build:
+      context: .
+      dockerfile: services/ml/Dockerfile
+      args:
+        TORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+    environment:
+      MODEL_ROOT: /models
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      DEVICE: cpu
+    volumes:
+      - ./.models/oa-final-2026-09-03:/models:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v1/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+    networks: [backend]
+
+  ml-inference-gpu:
+    profiles: [gpu]
+    build:
+      context: .
+      dockerfile: services/ml/Dockerfile.gpu
+    environment:
+      MODEL_ROOT: /models
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      DEVICE: cuda
+    volumes:
+      - ./.models/oa-final-2026-09-03:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    networks: [backend]
+
+  web-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgresql://oa_app:${POSTGRES_PASSWORD:-oa_dev_password}@postgres:5432/oa_app
+      JWT_SECRET: ${JWT_SECRET}
+      CSRF_SECRET: ${CSRF_SECRET}
+      FIELD_ENCRYPTION_KEY: ${FIELD_ENCRYPTION_KEY}
+      BLIND_INDEX_KEY: ${BLIND_INDEX_KEY}
+      SERVICE_TOKEN: ${SERVICE_TOKEN}
+      ML_SERVICE_URL: ${ML_SERVICE_URL:-http://ml-inference:8000}
+      ASSET_ROOT: /data/assets
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      DEPLOYMENT_ENV: ${DEPLOYMENT_ENV:-local}
+      CLINICAL_PRODUCTION_APPROVED: ${CLINICAL_PRODUCTION_APPROVED:-false}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ml-inference:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    volumes:
+      - clinical-assets:/data/assets
+    networks: [backend]
+
+volumes:
+  postgres-data:
+  clinical-assets:
+
+networks:
+  backend:
+    internal: false

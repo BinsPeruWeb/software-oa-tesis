@@ -1,0 +1,22 @@
+{
+  "name": "oa-thesis-platform",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma de apoyo investigativo para osteoartritis de rodilla",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build -w @oa/contracts && npm run build -w @oa/web && npm run build -w @oa/api",
+    "dev": "npm run dev -w @oa/web",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=22 <25",
+    "npm": ">=10"
+  }
+}
+

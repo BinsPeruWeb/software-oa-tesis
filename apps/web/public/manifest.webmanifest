@@ -1,0 +1,10 @@
+{
+  "name": "OA Clínica — Evaluación experimental",
+  "short_name": "OA Clínica",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f4f2eb",
+  "theme_color": "#173f3a",
+  "icons": [{ "src": "/oa-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
+
