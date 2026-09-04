@@ -490,6 +490,230 @@ model_predictions
   -> clinician_reviews
 
 
+10.13 QUÉ CONTIENE Y PARA QUÉ SE USA CADA TABLA
+------------------------------------------------
+
+A continuación se explica cada tabla que aparece en las relaciones de maestros
+y detalles. "Tipo" indica el papel principal que cumple dentro del modelo.
+
+
+TABLA: roles
+Tipo: maestro de catálogo.
+Qué contiene:
+  El código y la descripción de los roles ADMIN y CLINICIAN.
+Para qué se usa:
+  Para definir si una cuenta pertenece a un administrador técnico o a un
+  médico, y determinar a qué módulos puede acceder.
+
+
+TABLA: users
+Tipo: maestro de usuarios.
+Qué contiene:
+  Correo de acceso, nombre, hash de contraseña, rol, estado de la cuenta,
+  intentos fallidos, bloqueo temporal, colegiatura, especialidad y fechas de
+  creación y actualización.
+Para qué se usa:
+  Para autenticar personas, asignar permisos, registrar médicos responsables e
+  identificar quién realizó cada operación.
+
+
+TABLA: mfa_credentials
+Tipo: detalle de users.
+Qué contiene:
+  Secreto MFA cifrado, estado de activación y fechas de creación y verificación.
+Para qué se usa:
+  Para configurar la autenticación mediante código temporal de un usuario.
+
+
+TABLA: sessions
+Tipo: detalle de users.
+Qué contiene:
+  Usuario propietario, fecha de vencimiento, fecha de revocación, creación y
+  última actividad.
+Para qué se usa:
+  Para mantener una sesión iniciada, controlar su vigencia y cerrarla cuando el
+  usuario sale o su cuenta es desactivada.
+
+
+TABLA: patients
+Tipo: maestro principal de pacientes.
+Qué contiene:
+  Historia clínica, DNI, nombres, apellidos, fecha de nacimiento, sexo, médico
+  responsable, creador, estado de archivo y fechas de registro. Los campos de
+  identidad están cifrados y los identificadores de búsqueda usan HMAC.
+Para qué se usa:
+  Para representar la ficha principal del paciente y conectar toda su
+  información clínica, radiográfica y longitudinal.
+
+
+TABLA: patient_contacts
+Tipo: detalle de patients.
+Qué contiene:
+  Teléfono y correo electrónico cifrados.
+Para qué se usa:
+  Para separar los datos de contacto de la identidad clínica principal del
+  paciente.
+
+
+TABLA: patient_clinical_profiles
+Tipo: detalle de patients.
+Qué contiene:
+  Dolor actual, obesidad, diabetes, hipertensión, consumo de nicotina, trauma de
+  miembro inferior, usuario que actualizó y fecha de actualización.
+Para qué se usa:
+  Para conservar el estado clínico actual del paciente y utilizarlo como base
+  al crear un nuevo análisis.
+
+
+TABLA: prior_exams
+Tipo: detalle de patients.
+Qué contiene:
+  Fecha del examen anterior, lateralidad, KL confirmado, dolor y cinco
+  indicadores clínicos históricos.
+Para qué se usa:
+  Para incorporar antecedentes externos que no fueron analizados en la
+  plataforma y utilizarlos en los cálculos longitudinales de XGBoost y LSTM.
+
+
+TABLA: clinical_episodes
+Tipo: detalle de patients y maestro de estudios y reportes.
+Qué contiene:
+  Paciente, fecha de apertura, estado del episodio, creador y fecha de registro.
+Para qué se usa:
+  Para agrupar las radiografías, resultados y reportes que pertenecen a una
+  misma evaluación clínica.
+
+
+TABLA: stored_assets
+Tipo: maestro técnico de archivos y detalle de patients.
+Qué contiene:
+  Paciente, tipo de archivo, ubicación interna, tipo MIME, nombre original
+  cifrado, hash SHA-256, tamaño, creador y fecha.
+Para qué se usa:
+  Para localizar y comprobar la integridad de radiografías, Grad-CAM y PDF
+  almacenados de forma cifrada, sin guardar archivos grandes en PostgreSQL.
+
+
+TABLA: image_preflight_reviews
+Tipo: maestro de validaciones previas de imagen.
+Qué contiene:
+  Hash de la entrada, clase de archivo, tipo MIME, estado de validación, diseño
+  sugerido, compatibilidad, modelo proveedor, identificador de solicitud,
+  costo, evaluación, creador y vencimiento.
+Para qué se usa:
+  Para registrar la revisión que determina si el archivo corresponde a una
+  radiografía de rodilla y si contiene una o dos rodillas antes de crear el
+  estudio.
+
+
+TABLA: radiographic_studies
+Tipo: detalle de clinical_episodes y maestro de observaciones de rodilla.
+Qué contiene:
+  Episodio, radiografía cifrada, revisión previa, fecha del examen, formato de
+  entrada, confirmaciones técnicas, inversión de polaridad, corrección
+  horizontal, creador y fecha.
+Para qué se usa:
+  Para representar el estudio radiográfico cargado y conservar exactamente las
+  condiciones con las que será procesado.
+
+
+TABLA: knee_observations
+Tipo: detalle de radiographic_studies y maestro del análisis de una rodilla.
+Qué contiene:
+  Estudio de origen y lateralidad izquierda o derecha.
+Para qué se usa:
+  Para separar el estudio completo de la rodilla específica que se analiza y
+  relacionarla con datos clínicos, trabajos y predicciones.
+
+
+TABLA: clinical_observations
+Tipo: detalle de knee_observations.
+Qué contiene:
+  Dolor, obesidad, diabetes, hipertensión, nicotina, trauma, usuario y fecha del
+  registro.
+Para qué se usa:
+  Para guardar una fotografía de los datos clínicos que tenía el paciente al
+  momento del estudio, aunque su perfil actual cambie después.
+
+
+TABLA: inference_jobs
+Tipo: detalle de knee_observations y maestro de una predicción ejecutada.
+Qué contiene:
+  Observación de rodilla, tipo de trabajo, estado, clave de idempotencia,
+  número de intentos, error, correlation ID, creador y tiempos de ejecución.
+Para qué se usa:
+  Para administrar la cola de análisis KL y Grad-CAM, evitar duplicados y
+  recuperar trabajos después de reiniciar los servicios.
+
+
+TABLA: model_predictions
+Tipo: detalle de knee_observations e inference_jobs; maestro de explicaciones y
+revisiones.
+Qué contiene:
+  Modelo, versión, hashes de artefactos, hash y fuente de entrada, lateralidad,
+  probabilidades, umbral, resultado de tamiz, origen del KL, latencia,
+  dispositivo, usuario, correlation ID y fecha.
+Para qué se usa:
+  Para conservar los resultados de CNN, XGBoost y LSTM con todos los datos
+  necesarios para reproducir y auditar cada inferencia.
+
+
+TABLA: gradcam_explanations
+Tipo: detalle de model_predictions.
+Qué contiene:
+  Predicción, backbone utilizado, archivo cifrado del mapa y KL objetivo.
+Para qué se usa:
+  Para relacionar una clasificación KL con sus mapas visuales de ResNet50 y
+  DenseNet121.
+
+
+TABLA: clinician_reviews
+Tipo: detalle de model_predictions.
+Qué contiene:
+  Predicción revisada, decisión, KL confirmado, motivo, médico revisor y fecha.
+Para qué se usa:
+  Para guardar la confirmación, corrección o rechazo realizado por el médico
+  sin modificar el resultado original del modelo.
+
+
+TABLA: draft_reports
+Tipo: detalle de clinical_episodes.
+Qué contiene:
+  Episodio, archivo PDF cifrado, estado, tipo de reporte, usuario generador y
+  fecha.
+Para qué se usa:
+  Para conservar las distintas versiones de reportes por episodio o
+  longitudinales y permitir su descarga autenticada.
+
+
+TABLA: app_settings
+Tipo: maestro independiente de configuración.
+Qué contiene:
+  Clave de configuración, valor JSON, usuario que actualizó y fecha.
+Para qué se usa:
+  Para configurar datos generales sin modificar el código, como el nombre de
+  la institución, subtítulo del reporte y prefijo de historia clínica.
+
+
+TABLA: audit_events
+Tipo: detalle histórico global.
+Qué contiene:
+  Actor, acción, tipo e identificador de entidad, correlation ID, metadatos y
+  fecha del evento.
+Para qué se usa:
+  Para conocer quién realizó una operación, sobre qué registro y cuándo. Sus
+  filas no pueden editarse ni eliminarse.
+
+
+TABLA: schema_migrations
+Tipo: tabla técnica independiente.
+Qué contiene:
+  Nombre de la migración y fecha en que fue aplicada.
+Para qué se usa:
+  Para que la aplicación sepa qué cambios de estructura ya existen en la base
+  y no vuelva a ejecutarlos.
+
+
 11. ARCHIVOS DE REFERENCIA
 --------------------------
 
