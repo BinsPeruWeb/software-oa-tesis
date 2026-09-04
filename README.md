@@ -1,149 +1,251 @@
-# Plataforma OA — tesis
+# Plataforma OA para apoyo clínico experimental
 
-Aplicación web de apoyo investigativo para clasificar osteoartritis de rodilla y
-mostrar riesgos independientes de progresión y artroplastia. No sustituye la
-decisión del traumatólogo ni emite indicaciones quirúrgicas.
+Aplicación web para gestionar pacientes y episodios radiográficos de rodilla,
+clasificar el grado de osteoartritis Kellgren-Lawrence (KL), generar mapas
+Grad-CAM y estimar por separado los riesgos de artroplastia y progresión.
 
-## Componentes
+## Arquitectura
 
-- `apps/web`: PWA React/TypeScript.
-- `apps/api`: API NestJS, PostgreSQL, autenticación, auditoría y reportes.
-- `services/ml`: FastAPI/Python 3.12 para CNN, Grad-CAM, XGBoost y LSTM.
-- `packages/contracts`: contratos compartidos del producto.
-- `scripts`: importación y verificación de la entrega privada de modelos.
+- `apps/web`: PWA en React y TypeScript.
+- `apps/api`: API NestJS, autenticación, reglas clínicas, auditoría y PDF.
+- `services/ml`: FastAPI con Python 3.12 para CNN, Grad-CAM, XGBoost y LSTM.
+- `packages/contracts`: contratos compartidos entre frontend y backend.
+- PostgreSQL 18: persistencia de usuarios, pacientes, estudios y resultados.
+- Docker Compose: ejecución reproducible sin instalar Node, Python ni PostgreSQL.
 
-Los modelos no se almacenan en Git. La entrega original
-`oa-final-2026-09-03` debe importarse en `.models/oa-final-2026-09-03` y superar
-la comprobación SHA-256 antes de iniciar inferencia.
+La aplicación maneja dos roles:
 
-## Inicio local
+- **Administrador técnico:** dashboard, cuentas de usuario, CRUD de médicos,
+  auditoría y configuración. Al registrar un médico se crea su usuario.
+- **Médico:** dashboard clínico, pacientes propios, historia clínica, estudios,
+  análisis, revisiones y reportes.
 
-1. Instale Git y Docker Desktop.
-2. Ejecute `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-env.ps1`
-   para crear `.env` con secretos distintos y aleatorios.
-3. Importe los modelos en PowerShell:
+Cada paciente pertenece a un único médico responsable. Su número de historia
+clínica se genera automáticamente con el formato `OA-000001`.
 
-   ```powershell
-   powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/models.ps1 -SourceDirectory ../entrega_software_oa_final
-   ```
+## Requisitos para ejecutar una copia clonada
 
-4. Inicie el perfil CPU:
+En el dispositivo se necesita:
 
-   ```bash
-   docker compose up --build
-   ```
+1. Windows 10/11, macOS o Linux de 64 bits.
+2. [Git](https://git-scm.com/downloads).
+3. Docker Desktop con Docker Compose v2, o Docker Engine + el complemento
+   Compose v2 en Linux.
+4. Acceso a este repositorio privado y al Release privado de modelos.
+5. Al menos 8 GB de RAM y 10 GB de espacio libre. Se recomiendan 16 GB de RAM
+   para una inferencia CPU más cómoda.
 
-5. Abra `http://localhost:3000`.
+No se necesita instalar Node.js, npm, Python, una `venv`, PyTorch ni PostgreSQL
+en el sistema anfitrión: todos se ejecutan dentro de contenedores.
 
-La aplicación tiene dos espacios separados:
+## Instalación paso a paso
 
-- **Administrador técnico:** dashboard operativo, usuarios administrativos,
-  gestión separada de médicos, auditoría y configuración. En “Usuarios” solo
-  puede editar o desactivar cuentas existentes; al registrar un médico se crea
-  automáticamente su cuenta de acceso. No puede consultar pacientes ni estudios.
-- **Médico:** dashboard clínico, pacientes propios, estudios, revisiones y
-  reportes. Cada paciente pertenece exclusivamente al médico que lo registra.
+### 1. Clonar el repositorio
 
-La historia clínica interna se genera de forma correlativa (`OA-000001`) y se
-almacena cifrada. El médico no debe escribirla manualmente.
-
-El dolor y los cinco indicadores clínicos se registran una sola vez en la ficha
-del paciente y se actualizan cuando cambian. Cada estudio conserva una copia de
-esos valores para mantener la trazabilidad temporal. Los exámenes antiguos que
-no están en el sistema también se agregan desde la historia clínica.
-
-Después de guardar una radiografía se ejecutan automáticamente la clasificación
-KL, los dos Grad-CAM y los riesgos disponibles. La ficha presenta los episodios
-como una línea de tiempo visual; desde “Ver análisis” se consultan todos los
-resultados, tiempos y reportes.
-
-La LSTM necesita dos observaciones de la misma rodilla con fechas distintas. El
-sistema toma automáticamente el análisis anterior más reciente o, si no existe,
-un antecedente externo registrado. No está disponible si el episodio actual es
-KL4.
-
-### Servicios opcionales de automatización
-
-El formulario puede completar nombres, apellidos, sexo y nacimiento mediante
-PeruDevs cuando el usuario pulsa **Autocompletar**. También puede revisar la
-imagen con OpenRouter y `google/gemini-2.5-flash-lite` antes de almacenarla. Las
-claves se configuran exclusivamente en `.env`:
-
-```text
-PERUDEVS_API_KEY=...
-OPENROUTER_ENABLED=true
-OPENROUTER_API_KEY=...
+```bash
+git clone https://github.com/BinsPeruWeb/software-oa-tesis.git
+cd software-oa-tesis
 ```
 
-El navegador nunca recibe esas claves. La revisión visual envía solamente una
-miniatura PNG reducida, sin metadatos DICOM y con sus bordes enmascarados; no
-envía el archivo DICOM original. Se solicita una ruta sin retención ni
-recolección de datos. Si el modelo determina que no es una radiografía o que no
-muestra una rodilla, el servidor bloquea la creación del estudio sin permitir
-una excepción manual. Los resultados inciertos sí requieren revisión humana.
-Esta revisión no estima KL ni diagnostica.
+Por tratarse de un repositorio privado, GitHub solicitará iniciar sesión o usar
+una credencial personal autorizada.
 
-Un DICOM puede contener identidad, nacimiento, sexo y otros datos del paciente.
-La aplicación no importa esos campos a la historia clínica: actualmente solo
-lee la fecha del estudio, cuando está disponible, y usa la ficha registrada
-como fuente de identidad. PNG/JPG no incorpora metadatos clínicos normalizados
-y usa el mismo formulario de estudio. La eliminación de metadatos no puede
-garantizar que no exista texto identificable grabado dentro de los píxeles; por
-eso las imágenes clínicas requieren el procedimiento institucional de
-desidentificación antes de utilizar servicios externos.
+### 2. Crear la configuración local
 
-No use esos servicios con información clínica identificable hasta que la
-institución autorice expresamente a ambos proveedores y el flujo de datos.
+En Windows PowerShell:
 
-No es necesario instalar Node, Python, crear una `venv` ni instalar PostgreSQL
-en la laptop: esas versiones y dependencias se ejecutan dentro de los
-contenedores. Las credenciales iniciales están en `.env`. Con la configuración
-local actual el acceso usa solo correo y contraseña; al reactivar MFA, la
-interfaz solicitará el código TOTP o el enrolamiento correspondiente.
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/setup-env.ps1
+```
 
-Para detener o volver a iniciar el entorno sin perder los datos locales:
+En macOS o Linux:
+
+```bash
+chmod +x scripts/setup-env.sh scripts/models.sh
+./scripts/setup-env.sh
+```
+
+El script crea `.env`, genera claves aleatorias independientes y muestra la
+contraseña inicial del administrador. Guarde esa contraseña para el primer
+inicio de sesión. El correo inicial se configura en
+`BOOTSTRAP_ADMIN_EMAIL` dentro de `.env`.
+
+Las integraciones externas son opcionales. Para habilitarlas, edite `.env`:
+
+```text
+PERUDEVS_API_KEY=
+OPENROUTER_ENABLED=true
+OPENROUTER_API_KEY=
+OPENROUTER_MODEL=google/gemini-2.5-flash-lite
+```
+
+Las claves solo se usan en el backend y nunca se envían al navegador.
+
+### 3. Instalar el paquete privado de modelos
+
+Los modelos no están en Git. Descargue desde la sección **Releases** del
+repositorio el archivo `models-oa-final-2026-09-03.zip` y manténgalo comprimido.
+
+En Windows PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/models.ps1 `
+  -PackageZip "$HOME\Downloads\models-oa-final-2026-09-03.zip"
+```
+
+En macOS o Linux:
+
+```bash
+./scripts/models.sh "$HOME/Downloads/models-oa-final-2026-09-03.zip"
+```
+
+Si ya se recibió la carpeta original sin comprimir, también puede importarse:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/models.ps1 `
+  -SourceDirectory "C:\ruta\entrega_software_oa_final"
+```
+
+```bash
+./scripts/models.sh /ruta/entrega_software_oa_final
+```
+
+Ambos scripts instalan el paquete en `.models/oa-final-2026-09-03`, comprueban
+el Release esperado y verifican los 51 hashes SHA-256 antes de aceptar los
+artefactos. La carpeta `.models` permanece fuera de Git.
+
+### 4. Construir e iniciar la aplicación
+
+Compruebe que Docker esté iniciado y ejecute:
+
+```bash
+docker compose up --build -d
+```
+
+La primera construcción descarga imágenes y dependencias, por lo que puede
+tardar varios minutos. Consulte el estado con:
+
+```bash
+docker compose ps
+```
+
+Cuando `postgres` y `ml-inference` aparezcan saludables y `web-api` esté en
+ejecución, abra:
+
+```text
+http://localhost:3000
+```
+
+Inicie sesión con `BOOTSTRAP_ADMIN_EMAIL` y la contraseña mostrada en el paso
+2. Las migraciones se aplican automáticamente sobre una base nueva.
+
+### 5. Detener y reanudar
+
+Para detener los contenedores sin eliminar pacientes ni archivos locales:
 
 ```bash
 docker compose stop
+```
+
+Para reanudarlos:
+
+```bash
 docker compose start
 ```
 
-## Verificación local
+Para ver registros de ejecución:
 
-El smoke test automatizado recorre autenticación médica, paciente sintético, revisión
-visual de carga PNG,
-CNN, Grad-CAM, revisión clínica, XGBoost, LSTM y reporte PDF:
+```bash
+docker compose logs -f web-api ml-inference
+```
+
+## Uso funcional resumido
+
+1. El administrador registra un médico; su cuenta se crea automáticamente.
+2. El médico registra un paciente o usa PeruDevs para autocompletar el DNI.
+3. Completa el perfil clínico del paciente: dolor, obesidad, diabetes,
+   hipertensión, nicotina y trauma de miembro inferior.
+4. Carga una radiografía DICOM, PNG o JPG y selecciona la rodilla.
+5. El sistema valida la imagen, ejecuta KL y Grad-CAM, y calcula los riesgos
+   que estén disponibles.
+6. El médico consulta el análisis del episodio, confirma o corrige KL y genera
+   un PDF por episodio o longitudinal.
+
+La LSTM se habilita cuando existen dos observaciones confirmadas de la misma
+rodilla con fechas diferentes y el KL actual no es 4. Puede usar un análisis
+anterior del sistema o un examen histórico registrado en la ficha.
+
+## Formatos de imagen
+
+- `DICOM_BILATERAL`: radiografía bilateral DICOM.
+- `RASTER_BILATERAL`: radiografía bilateral PNG o JPG.
+- `RASTER_SINGLE_ROI`: PNG o JPG ya recortado a una rodilla.
+
+El DICOM puede aportar la fecha del estudio, pero la identidad del paciente se
+toma siempre de su ficha. PNG y JPG no requieren campos clínicos adicionales.
+La revisión visual opcional mediante OpenRouter recibe una miniatura sin
+metadatos y bloquea archivos que no correspondan a una radiografía de rodilla.
+
+## Verificación para desarrollo
+
+Con Node.js instalado localmente, las comprobaciones rápidas son:
+
+```bash
+npm ci
+npm run typecheck
+npm run build
+npm test
+```
+
+Node local solo es necesario para desarrollar o ejecutar estas comprobaciones;
+no es necesario para usar la aplicación con Docker.
+
+El smoke test recorre autenticación médica, paciente sintético, carga PNG, CNN,
+Grad-CAM, revisión, XGBoost, LSTM y PDF:
 
 ```bash
 node scripts/smoke-test.mjs
 ```
 
-Antes de ejecutarlo, cree desde el panel administrativo una cuenta médica
-exclusiva para pruebas y configure en `.env`:
+Antes debe crear una cuenta médica de prueba y configurar en `.env`:
 
 ```text
 SMOKE_CLINICIAN_EMAIL=medico-pruebas@example.invalid
 SMOKE_CLINICIAN_PASSWORD=una-contraseña-de-pruebas
 ```
 
-En local, el MFA está temporalmente deshabilitado para ambos roles mediante
-`ADMIN_MFA_REQUIRED=false` y `CLINICIAN_MFA_REQUIRED=false`. Los secretos TOTP
-existentes se conservan para poder reactivarlo posteriormente.
+Los contratos ML y las pruebas registradas están en
+[`docs/MODEL_CONTRACTS.md`](docs/MODEL_CONTRACTS.md) y
+[`docs/VERIFICATION.md`](docs/VERIFICATION.md).
 
-Para las pruebas Python con los modelos reales se usa el objetivo Docker `test`; consulte
-`docs/VERIFICATION.md` para los comandos y los resultados registrados.
+## Perfil NVIDIA opcional
 
-Los reportes permiten alcance por episodio o longitudinal e incluyen la vista
-de la radiografía, clasificación KL, probabilidades, revisión médica, contexto
-clínico, riesgos y mapas Grad-CAM disponibles.
+El perfil CPU es el predeterminado. Para una GPU NVIDIA se necesita NVIDIA
+Container Toolkit. Después configure en `.env`:
 
-El perfil NVIDIA local requiere NVIDIA Container Toolkit. Configure
-`ML_SERVICE_URL=http://ml-inference-gpu:8000` y ejecute
-`docker compose --profile gpu up --build`.
+```text
+ML_SERVICE_URL=http://ml-inference-gpu:8000
+```
 
-## Seguridad de datos
+E inicie el perfil:
 
-Nunca confirme DICOM, PNG/JPG clínicos, exportaciones, backups, `.env`, tokens o
-claves. Las pruebas actuales deben usar únicamente datos sintéticos o
-desidentificados. El despliegue externo se ha dejado deliberadamente para una
-etapa posterior. Consulte `docs/SECURITY_CHECKLIST.md` antes de usar datos reales.
+```bash
+docker compose --profile gpu up --build -d
+```
+
+## Modelo de base de datos y backlog
+
+- [`docs/database.dbml`](docs/database.dbml): esquema listo para pegar o
+  importar en dbdiagram.io.
+- [`context_product_backlog.md`](context_product_backlog.md): contexto funcional
+  y técnico para generar el product backlog en una hoja de cálculo.
+
+## Datos locales y secretos
+
+`.env`, `.models`, `.data`, radiografías, Grad-CAM, PDF y volúmenes de
+PostgreSQL están excluidos del repositorio. No confirme tokens, contraseñas,
+imágenes clínicas, exportaciones ni copias de seguridad.
+
+El entorno local actual permite configurar MFA por rol mediante
+`ADMIN_MFA_REQUIRED` y `CLINICIAN_MFA_REQUIRED`. El despliegue externo se
+mantiene fuera de esta etapa.
