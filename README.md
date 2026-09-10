@@ -161,7 +161,8 @@ docker compose logs -f web-api ml-inference
 
 ## Uso funcional resumido
 
-1. El administrador registra un médico; su cuenta se crea automáticamente.
+1. El administrador registra un médico con DNI, CMP y establecimiento de
+   salud; PeruDevs puede completar el nombre y la cuenta se crea automáticamente.
 2. El médico registra un paciente o usa PeruDevs para autocompletar el DNI.
 3. Completa el perfil clínico del paciente: dolor, obesidad, diabetes,
    hipertensión, nicotina y trauma de miembro inferior.

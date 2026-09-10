@@ -29,7 +29,8 @@ roles
 
 users
   Guarda las cuentas de acceso: nombre, correo, contraseña cifrada mediante
-  hash, rol, estado, colegiatura y especialidad.
+  hash y rol. Para los médicos también conserva DNI cifrado, CMP y
+  establecimiento de salud.
 
 mfa_credentials
   Guarda la configuración de autenticación en dos pasos de cada usuario.
@@ -510,11 +511,13 @@ TABLA: users
 Tipo: maestro de usuarios.
 Qué contiene:
   Correo de acceso, nombre, hash de contraseña, rol, estado de la cuenta,
-  intentos fallidos, bloqueo temporal, colegiatura, especialidad y fechas de
-  creación y actualización.
+  intentos fallidos, bloqueo temporal y fechas de creación y actualización.
+  Para los médicos contiene además DNI cifrado, índice HMAC del DNI, número de
+  CMP y establecimiento de salud donde trabaja.
 Para qué se usa:
   Para autenticar personas, asignar permisos, registrar médicos responsables e
-  identificar quién realizó cada operación.
+  identificar quién realizó cada operación. Los datos profesionales permiten
+  identificar al médico sin usar el campo de especialidad.
 
 
 TABLA: mfa_credentials

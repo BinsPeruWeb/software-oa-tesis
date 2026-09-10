@@ -44,7 +44,7 @@ Tiene acceso al espacio administrativo y puede:
 - consultar médicos en un módulo separado;
 - registrar, editar, activar y desactivar médicos;
 - crear automáticamente una cuenta de usuario al registrar un médico;
-- registrar colegiatura y especialidad del médico;
+- registrar DNI, CMP y establecimiento de salud del médico;
 - consultar la auditoría inmutable con búsqueda y paginación;
 - configurar nombre institucional, subtítulo del reporte y prefijo de historia
   clínica.
@@ -140,7 +140,12 @@ preprocesamiento de imágenes se realizan en FastAPI.
 ### 5.4 Administración de médicos
 
 - listado y búsqueda de médicos;
-- registro de nombre, correo, colegiatura, especialidad y contraseña inicial;
+- registro de DNI peruano, nombre, correo, CMP, establecimiento de salud y
+  contraseña inicial;
+- autocompletado del nombre mediante PeruDevs a partir del DNI;
+- almacenamiento cifrado del DNI e índice HMAC para búsqueda exacta;
+- generación de una contraseña legible que cumple la longitud mínima;
+- visualización y copia de la contraseña antes de guardar;
 - creación atómica del perfil médico y su cuenta de acceso;
 - edición de identidad profesional y credenciales;
 - activación y desactivación con confirmación;

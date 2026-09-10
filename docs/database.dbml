@@ -92,8 +92,11 @@ Table users {
   active boolean [not null, default: true]
   failed_attempts integer [not null, default: 0]
   locked_until timestamptz
-  professional_license text
-  specialty text
+  professional_license text [note: 'Número de CMP para usuarios médicos.']
+  specialty text [note: 'Campo heredado; ya no se solicita en la interfaz.']
+  clinician_dni_cipher bytea
+  clinician_dni_hmac char(64) [unique]
+  health_establishment text
   created_at timestamptz [not null, default: `now()`]
   updated_at timestamptz [not null, default: `now()`]
 

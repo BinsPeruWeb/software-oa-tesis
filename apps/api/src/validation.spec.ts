@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@jest/globals';
-import { cellphone, dateOfBirth, dni, email, isoDate, medicalRecord, personName } from './validation';
+import { cellphone, cmpNumber, dateOfBirth, dni, email, isoDate, medicalRecord, personName } from './validation';
 
 describe('validación de entradas públicas', () => {
   it('acepta únicamente un DNI peruano de ocho dígitos', () => {
@@ -12,6 +12,12 @@ describe('validación de entradas públicas', () => {
     expect(cellphone('912345678')).toBe('912345678');
     expect(() => cellphone('+51912345678')).toThrow();
     expect(() => cellphone('812345678')).toThrow();
+  });
+
+  it('acepta un CMP numérico de longitud controlada', () => {
+    expect(cmpNumber('123456')).toBe('123456');
+    expect(() => cmpNumber('123')).toThrow();
+    expect(() => cmpNumber('12A456')).toThrow();
   });
 
   it('limita y normaliza identidad, historia clínica y correo', () => {

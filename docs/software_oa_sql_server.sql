@@ -70,8 +70,10 @@ BEGIN TRY
         [active] BIT NOT NULL CONSTRAINT DF_users_active DEFAULT (1),
         [failed_attempts] INT NOT NULL CONSTRAINT DF_users_failed_attempts DEFAULT (0),
         [locked_until] DATETIMEOFFSET(7) NULL,
+        [clinician_dni_cipher] VARBINARY(MAX) NULL,
+        [clinician_dni_hmac] CHAR(64) NULL,
         [professional_license] NVARCHAR(30) NULL,
-        [specialty] NVARCHAR(80) NULL,
+        [health_establishment] NVARCHAR(120) NULL,
         [created_at] DATETIMEOFFSET(7) NOT NULL
             CONSTRAINT DF_users_created_at DEFAULT SYSDATETIMEOFFSET(),
         [updated_at] DATETIMEOFFSET(7) NOT NULL
@@ -543,6 +545,14 @@ BEGIN TRY
     CREATE INDEX IX_users_role_active
         ON dbo.users ([role_code], [active], [created_at] DESC);
 
+    CREATE UNIQUE INDEX UX_users_clinician_dni_hmac
+        ON dbo.users ([clinician_dni_hmac])
+        WHERE [clinician_dni_hmac] IS NOT NULL;
+
+    CREATE INDEX IX_users_health_establishment
+        ON dbo.users ([health_establishment])
+        WHERE [role_code] = N'CLINICIAN';
+
     CREATE INDEX IX_sessions_user
         ON dbo.sessions ([user_id], [expires_at] DESC);
 
@@ -620,6 +630,7 @@ BEGIN TRY
         (N'002_image_preflight.sql'),
         (N'003_dashboard_and_ownership.sql'),
         (N'004_patient_clinical_profile.sql'),
+        (N'005_clinician_identity.sql'),
         (N'sqlserver_equivalent_schema.sql');
 
     COMMIT TRANSACTION;

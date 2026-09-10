@@ -1,16 +1,32 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, UseGuards } from '@nestjs/common';
 import argon2 from 'argon2';
+import { randomUUID } from 'node:crypto';
 import { AdminGuard, AuthUser, CsrfGuard, CurrentUser, SessionGuard } from './auth';
-import { AuditService, DatabaseService } from './infrastructure';
+import { PeruDevsService } from './identity';
+import { AuditService, CryptoService, DatabaseService } from './infrastructure';
 import { PAGE_SIZE, pageNumber } from './pagination';
-import { email, optionalText, text, uuid } from './validation';
+import { cmpNumber, dni, email, text, uuid } from './validation';
 
-type UserInput = { email?: string; displayName?: string; password?: string; role?: string; professionalLicense?: string | null; specialty?: string | null };
+type UserInput = {
+  email?: string; displayName?: string; password?: string; role?: string;
+  dni?: string | null; cmp?: string | null; healthEstablishment?: string | null;
+};
+
+type AccountRow = {
+  id: string; email: string; displayName: string; role: 'ADMIN' | 'CLINICIAN'; active: boolean;
+  cmp: string | null; healthEstablishment: string | null; clinicianDniCipher: Buffer | null;
+  failedAttempts: number; lockedUntil: Date | null; createdAt: Date; updatedAt: Date; lastAccess: Date | null;
+};
 
 @Controller('api/admin')
 @UseGuards(SessionGuard, CsrfGuard, AdminGuard)
 export class AdminController {
-  constructor(private readonly db: DatabaseService, private readonly audit: AuditService) {}
+  constructor(
+    private readonly db: DatabaseService,
+    private readonly audit: AuditService,
+    private readonly identity: PeruDevsService,
+    private readonly crypto: CryptoService,
+  ) {}
 
   @Get('dashboard')
   async dashboard() {
@@ -32,18 +48,32 @@ export class AdminController {
     if (role) { values.push(role); clauses.push(`role_code=$${values.length}`); }
     if (search) {
       values.push(pattern); const parameter = `$${values.length}`;
-      clauses.push(`(email ILIKE ${parameter} ESCAPE '\\' OR display_name ILIKE ${parameter} ESCAPE '\\' OR COALESCE(specialty,'') ILIKE ${parameter} ESCAPE '\\')`);
+      const alternatives = [
+        `email ILIKE ${parameter} ESCAPE '\\'`, `display_name ILIKE ${parameter} ESCAPE '\\'`,
+        `COALESCE(professional_license,'') ILIKE ${parameter} ESCAPE '\\'`,
+        `COALESCE(health_establishment,'') ILIKE ${parameter} ESCAPE '\\'`,
+      ];
+      if (role === 'CLINICIAN' && /^\d{8}$/.test(search)) {
+        values.push(this.crypto.blindIndex(search));
+        alternatives.push(`clinician_dni_hmac=$${values.length}`);
+      }
+      clauses.push(`(${alternatives.join(' OR ')})`);
     }
     const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const total = Number((await this.db.query<{ count: string }>(`SELECT count(*)::text count FROM users ${where}`, values)).rows[0].count);
     const offset = (Math.min(page, Math.max(1, Math.ceil(total / PAGE_SIZE))) - 1) * PAGE_SIZE;
-    const result = await this.db.query(
-      `SELECT id,email,display_name "displayName",role_code role,active,professional_license "professionalLicense",
-       specialty,failed_attempts "failedAttempts",locked_until "lockedUntil",created_at "createdAt",updated_at "updatedAt",
+    const result = await this.db.query<AccountRow>(
+      `SELECT id,email,display_name "displayName",role_code role,active,professional_license cmp,
+       health_establishment "healthEstablishment",clinician_dni_cipher "clinicianDniCipher",
+       failed_attempts "failedAttempts",locked_until "lockedUntil",created_at "createdAt",updated_at "updatedAt",
        (SELECT max(last_seen_at) FROM sessions WHERE user_id=users.id) "lastAccess"
        FROM users ${where} ORDER BY created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${offset}`, values,
     );
-    return { items: result.rows, page: Math.floor(offset / PAGE_SIZE) + 1, pageSize: PAGE_SIZE, total, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
+    const items = result.rows.map(({ clinicianDniCipher, ...account }) => ({
+      ...account,
+      dni: role === 'CLINICIAN' && clinicianDniCipher ? this.crypto.decryptText(clinicianDniCipher, `user:${account.id}:dni`) : null,
+    }));
+    return { items, page: Math.floor(offset / PAGE_SIZE) + 1, pageSize: PAGE_SIZE, total, pages: Math.max(1, Math.ceil(total / PAGE_SIZE)) };
   }
 
   @Get('users')
@@ -52,28 +82,50 @@ export class AdminController {
   @Get('clinicians')
   clinicians(@Query('page') page?: string, @Query('search') search?: string) { return this.accounts('CLINICIAN', page, search); }
 
+  @Get('lookup-dni')
+  async lookupDni(@Query('dni') document: string, @CurrentUser() actor: AuthUser) {
+    const value = await this.identity.lookup(dni(document), actor.id);
+    await this.audit.record(actor.id, 'DNI_LOOKUP', 'ClinicianIdentityLookup', undefined, { found: value.found });
+    return value;
+  }
+
   private normalized(body: UserInput, passwordRequired: boolean) {
     const normalizedEmail = email(body.email, true)!;
     const displayName = text(body.displayName, 'Nombre visible', 2, 100);
     if (!['CLINICIAN', 'ADMIN'].includes(body.role ?? '')) throw new BadRequestException('Rol inválido');
     if (passwordRequired && (!body.password || body.password.length < 8 || body.password.length > 128)) throw new BadRequestException('La contraseña debe tener entre 8 y 128 caracteres');
     if (body.password && (body.password.length < 8 || body.password.length > 128)) throw new BadRequestException('La contraseña debe tener entre 8 y 128 caracteres');
-    return { email: normalizedEmail, displayName, role: body.role!, password: body.password,
-      professionalLicense: optionalText(body.professionalLicense, 'Colegiatura', 30), specialty: optionalText(body.specialty, 'Especialidad', 80) };
+    return { email: normalizedEmail, displayName, role: body.role!, password: body.password };
+  }
+
+  private normalizedClinician(body: UserInput) {
+    return {
+      dni: dni(body.dni),
+      cmp: cmpNumber(body.cmp),
+      healthEstablishment: text(body.healthEstablishment, 'Establecimiento de salud', 2, 120),
+    };
   }
 
   @Post('clinicians')
   async createClinician(@Body() body: UserInput, @CurrentUser() actor: AuthUser) {
     const input = this.normalized({ ...body, role: 'CLINICIAN' }, true);
+    const clinician = this.normalizedClinician(body);
     const hash = await argon2.hash(input.password!, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 });
+    const id = randomUUID();
     try {
-      const result = await this.db.query<{ id: string }>(
-        `INSERT INTO users(email,display_name,password_hash,role_code,professional_license,specialty) VALUES($1,$2,$3,$4,$5,$6) RETURNING id`,
-        [input.email, input.displayName, hash, input.role, input.professionalLicense, input.specialty],
+      await this.db.query(
+        `INSERT INTO users(id,email,display_name,password_hash,role_code,professional_license,health_establishment,
+         clinician_dni_cipher,clinician_dni_hmac) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, input.email, input.displayName, hash, input.role, clinician.cmp, clinician.healthEstablishment,
+          this.crypto.encrypt(clinician.dni, `user:${id}:dni`), this.crypto.blindIndex(clinician.dni)],
       );
-      await this.audit.record(actor.id, 'CLINICIAN_CREATED', 'User', result.rows[0].id, { accountCreated: true });
-      return { id: result.rows[0].id };
-    } catch (error: any) { if (error?.code === '23505') throw new BadRequestException('El correo ya está registrado'); throw error; }
+      await this.audit.record(actor.id, 'CLINICIAN_CREATED', 'User', id, { accountCreated: true });
+      return { id };
+    } catch (error: any) {
+      if (error?.code === '23505' && String(error?.constraint ?? '').includes('clinician_dni')) throw new BadRequestException('El DNI ya está registrado en otra cuenta');
+      if (error?.code === '23505') throw new BadRequestException('El correo ya está registrado');
+      throw error;
+    }
   }
 
   private async updateAccount(id: string, body: UserInput, actor: AuthUser, expectedRole?: 'ADMIN' | 'CLINICIAN') {
@@ -83,15 +135,29 @@ export class AdminController {
     const input = this.normalized({ ...body, role: expectedRole ?? target.role_code }, false);
     const passwordHash = input.password ? await argon2.hash(input.password, { type: argon2.argon2id, memoryCost: 65536, timeCost: 3, parallelism: 1 }) : null;
     try {
-      const result = await this.db.query<{ id: string }>(
-        `UPDATE users SET email=$2,display_name=$3,role_code=$4,professional_license=$5,specialty=$6,
-         password_hash=COALESCE($7,password_hash),updated_at=now() WHERE id=$1 RETURNING id`,
-        [id, input.email, input.displayName, input.role, input.professionalLicense, input.specialty, passwordHash],
-      );
+      const result = expectedRole === 'CLINICIAN'
+        ? await (() => {
+          const clinician = this.normalizedClinician(body);
+          return this.db.query<{ id: string }>(
+            `UPDATE users SET email=$2,display_name=$3,role_code=$4,professional_license=$5,health_establishment=$6,
+             clinician_dni_cipher=$7,clinician_dni_hmac=$8,password_hash=COALESCE($9,password_hash),updated_at=now()
+             WHERE id=$1 RETURNING id`,
+            [id, input.email, input.displayName, input.role, clinician.cmp, clinician.healthEstablishment,
+              this.crypto.encrypt(clinician.dni, `user:${id}:dni`), this.crypto.blindIndex(clinician.dni), passwordHash],
+          );
+        })()
+        : await this.db.query<{ id: string }>(
+          `UPDATE users SET email=$2,display_name=$3,role_code=$4,password_hash=COALESCE($5,password_hash),updated_at=now()
+           WHERE id=$1 RETURNING id`, [id, input.email, input.displayName, input.role, passwordHash],
+        );
       if (!result.rowCount) throw new BadRequestException('Usuario no encontrado');
       await this.audit.record(actor.id, 'USER_UPDATED', 'User', id, { role: input.role, passwordChanged: Boolean(passwordHash) });
       return { updated: true };
-    } catch (error: any) { if (error?.code === '23505') throw new BadRequestException('El correo ya está registrado'); throw error; }
+    } catch (error: any) {
+      if (error?.code === '23505' && String(error?.constraint ?? '').includes('clinician_dni')) throw new BadRequestException('El DNI ya está registrado en otra cuenta');
+      if (error?.code === '23505') throw new BadRequestException('El correo ya está registrado');
+      throw error;
+    }
   }
 
   @Patch('users/:id')

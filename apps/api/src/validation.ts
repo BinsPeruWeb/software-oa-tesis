@@ -26,6 +26,12 @@ export function cellphone(value: unknown) {
   return normalized;
 }
 
+export function cmpNumber(value: unknown) {
+  const normalized = text(value, 'CMP', 4, 10);
+  if (!/^\d{4,10}$/.test(normalized)) throw new BadRequestException('El CMP debe contener entre 4 y 10 dígitos');
+  return normalized;
+}
+
 export function personName(value: unknown, label: string) {
   const normalized = text(value, label, 2, 80);
   if (!/^[\p{L}\p{M}][\p{L}\p{M} .'-]*$/u.test(normalized)) {
