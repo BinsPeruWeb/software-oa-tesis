@@ -3,7 +3,7 @@
 ## 1. Propósito de este documento
 
 Este archivo reúne el alcance funcional y técnico implementado en la plataforma
-OA hasta el 4 de septiembre de 2026. Está preparado como fuente para que otra
+OA hasta el 17 de septiembre de 2026. Está preparado como fuente para que otra
 herramienta genere un Product Backlog en Excel.
 
 El backlog resultante debe representar capacidades del producto y criterios de
@@ -25,6 +25,7 @@ Objetivos principales:
 - mostrar probabilidades por clase y mapas Grad-CAM;
 - estimar riesgo de artroplastia a 24 meses con XGBoost;
 - estimar progresión de al menos un grado KL en 3 a 12 meses con LSTM;
+- generar orientación clínica individual y longitudinal con datos desidentificados;
 - conservar trazabilidad de entradas, modelos, revisiones y reportes;
 - ofrecer una experiencia administrativa y clínica adaptable a escritorio y
   móvil;
@@ -59,6 +60,7 @@ Tiene acceso al espacio clínico y puede:
 - iniciar sesión en el panel;
 - consultar el dashboard de su actividad;
 - registrar, editar y archivar pacientes propios;
+- consultar pacientes archivados y todo su historial en modo de solo lectura;
 - buscar por nombre, DNI o número de historia clínica;
 - consultar únicamente pacientes bajo su responsabilidad;
 - completar y actualizar el perfil clínico del paciente;
@@ -349,6 +351,10 @@ Reglas funcionales:
 - se deriva cambio KL, tasa anual KL, cambio de dolor e intervalo t1-t2;
 - se muestra la disponibilidad del resultado y su razón funcional;
 - el cálculo se ejecuta y registra automáticamente cuando existen los datos.
+- todas las observaciones se ordenan por la fecha real del examen;
+- al cargar un examen antiguo después de uno reciente se recalculan los estudios
+  posteriores de esa rodilla con el antecedente cronológico más cercano;
+- el orden de registro o carga no altera la elegibilidad ni el resultado.
 
 ### 5.16 Cola persistente de inferencia
 
@@ -374,6 +380,9 @@ Reglas funcionales:
 - imagen radiográfica contenida en dimensiones fijas sin recorte;
 - fecha, lateralidad, KL, confianza y riesgos resumidos por tarjeta;
 - botón Ver análisis para abrir el detalle del episodio.
+- orden del carrusel por fecha clínica del examen y no por fecha de carga;
+- paciente archivado visible con perfil, antecedentes, estudios y reportes;
+- bloqueo de edición, antecedentes, nuevos análisis y nuevos reportes al archivar;
 
 ### 5.18 Vista completa de análisis por episodio
 
@@ -391,6 +400,12 @@ Reglas funcionales:
 - dos mapas Grad-CAM;
 - acceso a revisión médica;
 - generación y descarga de reportes.
+- orientación individual estructurada del estudio.
+
+Las listas de estudios, revisiones y reportes incluyen búsqueda textual,
+intervalo de fechas, paginación de diez filas y filtros de estado cuando
+corresponde. Las acciones de estudios y revisiones abren directamente el
+análisis o la revisión del episodio seleccionado.
 
 ### 5.19 Reportes PDF
 
@@ -412,7 +427,25 @@ Reglas funcionales:
 - almacenamiento cifrado y descarga autenticada;
 - múltiples reportes conservados por episodio y fecha.
 
-### 5.20 Auditoría
+### 5.20 Orientaciones clínicas con OpenRouter
+
+- Gemini Flash-Lite configurado para la validación económica de imágenes;
+- Gemini 3.8 Flash configurado para interpretación clínica estructurada;
+- recomendación individual después de cada análisis completo;
+- recomendación longitudinal automática desde dos estudios;
+- actualización de la interpretación longitudinal con cada análisis nuevo;
+- una nota médica cifrada por análisis y una nota clínica general editable;
+- inclusión de interpretación, recomendación y nota en una página independiente del PDF;
+- uso de orden e intervalos relativos entre estudios;
+- exclusión de nombre, DNI, historia clínica, contacto, fecha exacta e imágenes;
+- salida JSON estricta con titular, resumen, acciones y prioridad;
+- cifrado AES-256-GCM de la recomendación persistida;
+- reutilización por hash cuando las entradas clínicas no cambiaron;
+- actualización cuando una carga fuera de orden modifica la progresión;
+- fallo aislado: la indisponibilidad externa no invalida los modelos locales;
+- advertencia de validación obligatoria por el médico responsable.
+
+### 5.21 Auditoría
 
 - registro de actor, acción, entidad, identificador, fecha y correlation ID;
 - metadatos estructurados en JSON;
@@ -422,7 +455,7 @@ Reglas funcionales:
 - filtro textual;
 - registro de accesos, cambios, inferencias, revisiones y exportaciones.
 
-### 5.21 Configuración institucional
+### 5.22 Configuración institucional
 
 - nombre de la organización de 2 a 100 caracteres;
 - subtítulo del reporte de 2 a 160 caracteres;
@@ -438,6 +471,7 @@ Entidades principales:
 - `User`
 - `MfaCredential`
 - `Session`
+- `ClinicalRecommendation`
 - `Patient`
 - `PatientContact`
 - `PatientClinicalProfile`

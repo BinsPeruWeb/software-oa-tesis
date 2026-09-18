@@ -689,6 +689,28 @@ Para qué se usa:
   longitudinales y permitir su descarga autenticada.
 
 
+TABLA: clinical_recommendations
+Tipo: detalle de patients y, para una recomendación individual, de knee_observations.
+Qué contiene:
+  Alcance individual o longitudinal, texto estructurado cifrado, modelo externo,
+  identificador de la solicitud, hash de los datos semánticos, costo y fecha.
+Para qué se usa:
+  Para conservar la orientación automática de cada análisis y el resumen general
+  de un paciente con dos o más estudios. No guarda nombres, DNI, historia clínica,
+  contacto ni imágenes dentro de la solicitud enviada al proveedor.
+
+
+TABLA: clinical_notes
+Tipo: detalle de patients y, para una nota individual, de knee_observations.
+Qué contiene:
+  Una nota médica cifrada, su alcance (análisis o paciente), el médico que la
+  actualizó y las fechas de creación y modificación.
+Para qué se usa:
+  Para conservar una única nota general editable por paciente y una nota por
+  cada análisis. Las notas se incluyen en el PDF correspondiente y quedan en
+  modo de solo lectura cuando el paciente se archiva.
+
+
 TABLA: app_settings
 Tipo: maestro independiente de configuración.
 Qué contiene:

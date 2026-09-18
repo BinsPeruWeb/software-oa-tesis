@@ -484,6 +484,62 @@ BEGIN TRY
             REFERENCES dbo.users ([id])
     );
 
+    /* Orientaciones clínicas generadas a partir de resultados desidentificados */
+    CREATE TABLE dbo.clinical_recommendations (
+        [id] UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT DF_clinical_recommendations_id DEFAULT NEWSEQUENTIALID(),
+        [patient_id] UNIQUEIDENTIFIER NOT NULL,
+        [observation_id] UNIQUEIDENTIFIER NULL,
+        [scope] NVARCHAR(20) NOT NULL,
+        [content_cipher] VARBINARY(MAX) NOT NULL,
+        [provider_model] NVARCHAR(200) NOT NULL,
+        [provider_request_id] NVARCHAR(255) NULL,
+        [input_hash] CHAR(64) NOT NULL,
+        [cost_usd] DECIMAL(12,8) NULL,
+        [generated_by] UNIQUEIDENTIFIER NOT NULL,
+        [generated_at] DATETIMEOFFSET(7) NOT NULL
+            CONSTRAINT DF_clinical_recommendations_generated_at DEFAULT SYSDATETIMEOFFSET(),
+        CONSTRAINT PK_clinical_recommendations PRIMARY KEY ([id]),
+        CONSTRAINT CK_clinical_recommendations_scope CHECK ([scope] IN (N'STUDY', N'PATIENT')),
+        CONSTRAINT CK_clinical_recommendations_target CHECK (
+            ([scope] = N'STUDY' AND [observation_id] IS NOT NULL) OR
+            ([scope] = N'PATIENT' AND [observation_id] IS NULL)
+        ),
+        CONSTRAINT FK_clinical_recommendations_patient FOREIGN KEY ([patient_id])
+            REFERENCES dbo.patients ([id]),
+        CONSTRAINT FK_clinical_recommendations_observation FOREIGN KEY ([observation_id])
+            REFERENCES dbo.knee_observations ([id]),
+        CONSTRAINT FK_clinical_recommendations_user FOREIGN KEY ([generated_by])
+            REFERENCES dbo.users ([id])
+    );
+
+    /* Notas clínicas cifradas por análisis o a nivel general del paciente */
+    CREATE TABLE dbo.clinical_notes (
+        [id] UNIQUEIDENTIFIER NOT NULL
+            CONSTRAINT DF_clinical_notes_id DEFAULT NEWSEQUENTIALID(),
+        [patient_id] UNIQUEIDENTIFIER NOT NULL,
+        [observation_id] UNIQUEIDENTIFIER NULL,
+        [scope] NVARCHAR(20) NOT NULL,
+        [content_cipher] VARBINARY(MAX) NOT NULL,
+        [updated_by] UNIQUEIDENTIFIER NOT NULL,
+        [created_at] DATETIMEOFFSET(7) NOT NULL
+            CONSTRAINT DF_clinical_notes_created_at DEFAULT SYSDATETIMEOFFSET(),
+        [updated_at] DATETIMEOFFSET(7) NOT NULL
+            CONSTRAINT DF_clinical_notes_updated_at DEFAULT SYSDATETIMEOFFSET(),
+        CONSTRAINT PK_clinical_notes PRIMARY KEY ([id]),
+        CONSTRAINT CK_clinical_notes_scope CHECK ([scope] IN (N'STUDY', N'PATIENT')),
+        CONSTRAINT CK_clinical_notes_target CHECK (
+            ([scope] = N'STUDY' AND [observation_id] IS NOT NULL) OR
+            ([scope] = N'PATIENT' AND [observation_id] IS NULL)
+        ),
+        CONSTRAINT FK_clinical_notes_patient FOREIGN KEY ([patient_id])
+            REFERENCES dbo.patients ([id]) ON DELETE CASCADE,
+        CONSTRAINT FK_clinical_notes_observation FOREIGN KEY ([observation_id])
+            REFERENCES dbo.knee_observations ([id]),
+        CONSTRAINT FK_clinical_notes_user FOREIGN KEY ([updated_by])
+            REFERENCES dbo.users ([id])
+    );
+
     /* Reportes PDF */
     CREATE TABLE dbo.draft_reports (
         [id] UNIQUEIDENTIFIER NOT NULL
@@ -600,6 +656,28 @@ BEGIN TRY
 
     CREATE INDEX IX_draft_reports_episode
         ON dbo.draft_reports ([episode_id], [generated_at] DESC);
+
+    CREATE UNIQUE INDEX UX_clinical_recommendations_study
+        ON dbo.clinical_recommendations ([observation_id])
+        WHERE [scope] = N'STUDY';
+
+    CREATE UNIQUE INDEX UX_clinical_recommendations_patient
+        ON dbo.clinical_recommendations ([patient_id])
+        WHERE [scope] = N'PATIENT';
+
+    CREATE INDEX IX_clinical_recommendations_patient_date
+        ON dbo.clinical_recommendations ([patient_id], [generated_at] DESC);
+
+    CREATE UNIQUE INDEX UX_clinical_notes_study
+        ON dbo.clinical_notes ([observation_id])
+        WHERE [scope] = N'STUDY';
+
+    CREATE UNIQUE INDEX UX_clinical_notes_patient
+        ON dbo.clinical_notes ([patient_id])
+        WHERE [scope] = N'PATIENT';
+
+    CREATE INDEX IX_clinical_notes_patient_date
+        ON dbo.clinical_notes ([patient_id], [updated_at] DESC);
 
     CREATE INDEX IX_audit_entity
         ON dbo.audit_events ([entity_type], [entity_id], [occurred_at] DESC);

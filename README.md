@@ -77,6 +77,7 @@ PERUDEVS_API_KEY=
 OPENROUTER_ENABLED=true
 OPENROUTER_API_KEY=
 OPENROUTER_MODEL=google/gemini-2.5-flash-lite
+OPENROUTER_RECOMMENDATION_MODEL=google/gemini-3.8-flash
 ```
 
 Las claves solo se usan en el backend y nunca se envían al navegador.
@@ -169,12 +170,19 @@ docker compose logs -f web-api ml-inference
 4. Carga una radiografía DICOM, PNG o JPG y selecciona la rodilla.
 5. El sistema valida la imagen, ejecuta KL y Grad-CAM, y calcula los riesgos
    que estén disponibles.
-6. El médico consulta el análisis del episodio, confirma o corrige KL y genera
+6. OpenRouter genera una orientación individual desidentificada; con dos o más
+   estudios también genera una orientación longitudinal en la ficha.
+7. El médico consulta el análisis del episodio, confirma o corrige KL y genera
    un PDF por episodio o longitudinal.
 
 La LSTM se habilita cuando existen dos observaciones confirmadas de la misma
 rodilla con fechas diferentes y el KL actual no es 4. Puede usar un análisis
-anterior del sistema o un examen histórico registrado en la ficha.
+anterior del sistema o un examen histórico registrado en la ficha. Los estudios
+se ordenan siempre por la fecha del examen: pueden cargarse en cualquier orden y
+los riesgos posteriores se recalculan automáticamente.
+
+Los pacientes archivados continúan visibles con sus análisis y reportes, pero
+quedan en modo de solo lectura y no admiten nuevos estudios ni modificaciones.
 
 ## Formatos de imagen
 
@@ -186,6 +194,9 @@ El DICOM puede aportar la fecha del estudio, pero la identidad del paciente se
 toma siempre de su ficha. PNG y JPG no requieren campos clínicos adicionales.
 La revisión visual opcional mediante OpenRouter recibe una miniatura sin
 metadatos y bloquea archivos que no correspondan a una radiografía de rodilla.
+Las orientaciones reciben únicamente grados, probabilidades, indicadores
+clínicos y tiempos relativos: no se envían nombres, DNI, historia clínica,
+contacto, fechas exactas ni imágenes.
 
 ## Verificación para desarrollo
 

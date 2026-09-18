@@ -10,10 +10,16 @@ web-api (NestJS, único servicio público)
     └── red privada + token de servicio
              ▼
        ml-inference (FastAPI)
-             └── volumen de modelos verificados por SHA-256
+             ├── volumen de modelos verificados por SHA-256
+             └── OpenRouter: prevalidación visual y orientación desidentificada
 ```
 
 React nunca calcula features ni llama directamente a FastAPI. NestJS envía conceptos clínicos y FastAPI vuelve a validar y deriva el vector final. FastAPI y PostgreSQL no deben recibir un dominio público.
+
+Para recomendaciones, NestJS transforma la cronología a números de secuencia e
+intervalos relativos. OpenRouter no recibe nombres, documentos, historia clínica,
+contacto, fechas exactas ni imágenes del paciente; la respuesta estructurada se
+valida y se cifra antes de persistirse.
 
 ## Datos y cifrado
 
@@ -33,4 +39,3 @@ Los trabajos se reclaman con `FOR UPDATE SKIP LOCKED`. Antes de arrancar el work
 ## Modelos
 
 La imagen de aplicación no contiene modelos. El arranque verifica los hashes congelados antes de `torch.load` o `joblib.load`. En Railway, el contenedor puede descargar un ZIP privado a su volumen cuando `MODEL_PACKAGE_URL` está configurada. Un fallo mantiene `/v1/health/ready` en 503.
-
