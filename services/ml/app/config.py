@@ -14,6 +14,9 @@ class Settings:
     openrouter_enabled: bool = os.getenv("OPENROUTER_ENABLED", "false").lower() == "true"
     openrouter_api_key: str = os.getenv("OPENROUTER_API_KEY", "")
     openrouter_model: str = os.getenv("OPENROUTER_MODEL", "google/gemini-2.5-flash-lite")
+    openrouter_recommendation_model: str = os.getenv(
+        "OPENROUTER_RECOMMENDATION_MODEL", "google/gemini-3.8-flash"
+    )
     openrouter_base_url: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
     openrouter_timeout_seconds: int = int(os.getenv("OPENROUTER_TIMEOUT_SECONDS", "25"))
 

@@ -2,9 +2,10 @@ from __future__ import annotations
 
 from datetime import date
 from enum import StrEnum
+import re
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
 
 
 class StrictModel(BaseModel):
@@ -153,3 +154,59 @@ class RiskResponse(StrictModel):
     screen_positive: bool
     model_hash: str
     features: dict[str, float | int | None] | None = None
+
+
+class RecommendationStudy(ClinicalFlags):
+    sequence: int = Field(ge=1, le=50)
+    months_since_first: float = Field(ge=0, le=1200)
+    knee_side: KneeSide
+    kl_grade: int = Field(ge=0, le=4)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    pain_score: float | None = Field(default=None, ge=0, le=10)
+    arthroplasty_probability: float | None = Field(default=None, ge=0, le=1)
+    progression_probability: float | None = Field(default=None, ge=0, le=1)
+    age_at_exam: float | None = Field(default=None, ge=0, le=130)
+    kl_source: Literal["CLINICIAN", "MODEL"]
+
+
+class RecommendationRequest(StrictModel):
+    scope: Literal["STUDY", "PATIENT"]
+    studies: list[RecommendationStudy] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_scope(self):
+        if self.scope == "STUDY" and len(self.studies) != 1:
+            raise ValueError("Una recomendación de estudio requiere exactamente un análisis")
+        if self.scope == "PATIENT" and len(self.studies) < 2:
+            raise ValueError("Una recomendación longitudinal requiere al menos dos análisis")
+        if [item.sequence for item in self.studies] != list(range(1, len(self.studies) + 1)):
+            raise ValueError("Los análisis deben enviarse en orden cronológico")
+        return self
+
+
+class RecommendationContent(StrictModel):
+    headline: str = Field(min_length=1, max_length=120)
+    summary: str = Field(min_length=1, max_length=700)
+    recommendation: str = Field(min_length=15, max_length=700, pattern=r"^Se recomienda\b")
+    priority: Literal["routine", "soon", "prompt"]
+
+    @field_validator("headline", "summary", "recommendation", mode="before")
+    @classmethod
+    def use_osteoarthritis_term(cls, value: object):
+        if not isinstance(value, str):
+            return value
+        return re.sub(
+            r"\bartrosis\b",
+            lambda match: "Osteoartritis" if match.group(0)[0].isupper() else "osteoartritis",
+            value.strip(),
+            flags=re.IGNORECASE,
+        )
+
+
+class RecommendationResponse(StrictModel):
+    available: bool
+    content: RecommendationContent | None = None
+    provider_model: str
+    provider_request_id: str | None = None
+    cost_usd: float | None = None
+    unavailable_reason: str | None = None

@@ -32,7 +32,10 @@ from .schemas import (
     KneeSide,
     ProgressionRequest,
     RiskResponse,
+    RecommendationRequest,
+    RecommendationResponse,
 )
+from .recommendations import generate_recommendation
 from .vision import assess_image, classify_review_status
 
 
@@ -308,4 +311,21 @@ def progression_risk(request: ProgressionRequest, model_suite: ModelSuite = Depe
         "screen_positive": probability >= LSTM_THRESHOLD,
         "model_hash": model_suite.model_hashes["lstm"],
         "features": None,
+    }
+
+
+@app.post(
+    "/v1/recommendations",
+    response_model=RecommendationResponse,
+    dependencies=[Depends(authorize)],
+)
+async def clinical_recommendation(request: RecommendationRequest):
+    generated = await generate_recommendation(settings, request)
+    return {
+        "available": generated.content is not None,
+        "content": generated.content.model_dump() if generated.content else None,
+        "provider_model": generated.model,
+        "provider_request_id": generated.provider_request_id,
+        "cost_usd": generated.cost,
+        "unavailable_reason": generated.unavailable_reason,
     }

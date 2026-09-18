@@ -10,7 +10,7 @@ from pydantic import ValidationError
 
 from app.engine import XGB_FEATURES, build_arthroplasty_features
 from app.imaging import detect_image, extract_bilateral_roi, normalize_pixels, read_dicom, read_raster
-from app.schemas import ArthroplastyRequest, ProgressionRequest
+from app.schemas import ArthroplastyRequest, ProgressionRequest, RecommendationContent, RecommendationRequest
 from app.vision import VisionAssessment, classify_review_status
 
 
@@ -59,6 +59,40 @@ def test_lstm_rejects_t2_kl4():
             {"date": "2024-01-01", "KLG": 2, "age_at_exam": 60, "knee_side": "L", **BASE_FLAGS},
             {"date": "2025-01-01", "KLG": 4, "age_at_exam": 61, "knee_side": "L", **BASE_FLAGS},
         ])
+
+
+def test_recommendations_require_chronological_studies_and_longitudinal_history():
+    study = {
+        "sequence": 1, "months_since_first": 0, "knee_side": "R", "kl_grade": 2,
+        "kl_source": "CLINICIAN", "age_at_exam": 65,
+        "pain_score": None, "obesity": False, "diabetes": False,
+        "hypertension": False, "nicotine_use": False, "trauma_lower_extremity": False,
+    }
+    with pytest.raises(ValidationError):
+        RecommendationRequest(scope="PATIENT", studies=[study])
+    later = {**study, "sequence": 2, "months_since_first": 3, "kl_grade": 3}
+    with pytest.raises(ValidationError):
+        RecommendationRequest(scope="PATIENT", studies=[later, study])
+
+
+def test_recommendation_uses_osteoarthritis_and_a_single_recommendation_paragraph():
+    content = RecommendationContent(
+        headline="Evolución de Artrosis de rodilla",
+        summary="La artrosis presenta cambios radiográficos.",
+        recommendation="Se recomienda correlacionar los resultados con la evaluación clínica.",
+        priority="routine",
+    )
+    assert "artrosis" not in content.headline.lower()
+    assert "artrosis" not in content.summary.lower()
+    assert content.recommendation.startswith("Se recomienda")
+
+    with pytest.raises(ValidationError):
+        RecommendationContent(
+            headline="Osteoartritis de rodilla",
+            summary="Sin cambios relevantes.",
+            recommendation="Control clínico periódico.",
+            priority="routine",
+        )
 
 
 def test_normalization_rejects_flat_image_and_left_roi_is_mirrored():

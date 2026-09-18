@@ -118,11 +118,12 @@ export class PatientsService {
     return { ...this.expose(row), stats: { episodes: Number(stats.episodes), studies: Number(stats.studies), reports: Number(stats.reports) } };
   }
 
-  async list(actor: AuthUser, requestedPage: unknown, search = '', archived = false) {
+  async list(actor: AuthUser, requestedPage: unknown, search = '', status: 'active' | 'archived' | 'all' = 'all') {
     const page = pageNumber(requestedPage);
     const rows = (await this.db.query<PatientRow>(
       `SELECT p.*,c.phone_cipher,c.email_cipher FROM patients p JOIN patient_contacts c ON c.patient_id=p.id
-       WHERE p.owner_clinician_id=$1 AND ($2::boolean OR p.archived_at IS NULL) ORDER BY p.created_at DESC`, [actor.id, archived],
+       WHERE p.owner_clinician_id=$1 AND ($2='all' OR ($2='active' AND p.archived_at IS NULL) OR ($2='archived' AND p.archived_at IS NOT NULL))
+       ORDER BY p.created_at DESC`, [actor.id, status],
     )).rows.map((row) => this.expose(row));
     const needle = String(search ?? '').trim().toLocaleLowerCase('es');
     const filtered = needle ? rows.filter((item) => [item.medicalRecordNumber, item.dni, item.names, item.surnames]
@@ -168,8 +169,16 @@ export class PatientsController {
   }
 
   @Get()
-  list(@CurrentUser() user: AuthUser, @Query('page') page?: string, @Query('search') search?: string, @Query('archived') archived?: string) {
-    return this.patients.list(user, page, search, archived === 'true');
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('search') search?: string,
+    @Query('status') rawStatus?: string,
+    @Query('archived') archived?: string,
+  ) {
+    const status = rawStatus ?? (archived === 'false' ? 'active' : 'all');
+    if (!['active', 'archived', 'all'].includes(status)) throw new BadRequestException('Estado de paciente inválido');
+    return this.patients.list(user, page, search, status as 'active' | 'archived' | 'all');
   }
   @Post() create(@Body() body: PatientInput, @CurrentUser() user: AuthUser) { return this.patients.create(body, user); }
   @Get('search') search(@Query('identifier') identifier: string, @CurrentUser() user: AuthUser) { return this.patients.search(identifier, user); }

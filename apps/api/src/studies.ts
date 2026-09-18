@@ -6,7 +6,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { createHash, randomUUID } from 'node:crypto';
 import { AuthUser, ClinicianGuard, CsrfGuard, CurrentUser, SessionGuard } from './auth';
 import { AssetService, AuditService, CryptoService, DatabaseService } from './infrastructure';
-import { PAGE_SIZE, pageNumber } from './pagination';
+import { pageNumber, paged } from './pagination';
 import { boundedNumber, isoDate, optionalText, text, uuid } from './validation';
 
 const SOURCE_TYPES = ['DICOM_BILATERAL', 'RASTER_BILATERAL', 'RASTER_SINGLE_ROI'] as const;
@@ -170,43 +170,74 @@ export class StudiesController {
   ) {}
 
   @Get('studies')
-  async studies(@Query('page') pageValue: string | undefined, @CurrentUser() user: AuthUser) {
-    const page = pageNumber(pageValue); const total = Number((await this.db.query<{ count: string }>(
-      `SELECT count(*)::text count FROM radiographic_studies s JOIN clinical_episodes e ON e.id=s.episode_id
-       JOIN patients p ON p.id=e.patient_id WHERE p.owner_clinician_id=$1`, [user.id],
-    )).rows[0].count); const pages = Math.max(1, Math.ceil(total / PAGE_SIZE)); const current = Math.min(page, pages);
+  async studies(
+    @Query('page') pageValue: string | undefined,
+    @Query('search') searchValue: string | undefined,
+    @Query('dateFrom') dateFromValue: string | undefined,
+    @Query('dateTo') dateToValue: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    const page = pageNumber(pageValue);
+    const search = optionalText(searchValue, 'Búsqueda', 100)?.toLocaleLowerCase('es') ?? '';
+    const dateFrom = dateFromValue ? isoDate(dateFromValue, 'Fecha desde') : null;
+    const dateTo = dateToValue ? isoDate(dateToValue, 'Fecha hasta') : null;
+    if (dateFrom && dateTo && dateFrom > dateTo) throw new BadRequestException('La fecha desde no puede ser posterior a la fecha hasta');
     const rows = (await this.db.query<any>(
       `SELECT s.id,s.exam_date "examDate",s.source_type "sourceType",s.created_at "createdAt",e.id "episodeId",
        p.id "patientId",p.names_cipher,p.surnames_cipher,p.medical_record_cipher,
        string_agg(DISTINCT k.knee_side,'') "kneeSides",max(j.status) FILTER(WHERE j.job_type='KL') status
        FROM radiographic_studies s JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id
        JOIN knee_observations k ON k.study_id=s.id LEFT JOIN inference_jobs j ON j.observation_id=k.id
-       WHERE p.owner_clinician_id=$1 GROUP BY s.id,e.id,p.id ORDER BY s.exam_date DESC LIMIT ${PAGE_SIZE} OFFSET ${(current - 1) * PAGE_SIZE}`, [user.id],
+       WHERE p.owner_clinician_id=$1 GROUP BY s.id,e.id,p.id ORDER BY s.exam_date DESC,s.id`, [user.id],
     )).rows.map((row) => ({ id: row.id, examDate: row.examDate, sourceType: row.sourceType, createdAt: row.createdAt,
       episodeId: row.episodeId, patientId: row.patientId, kneeSides: row.kneeSides, status: row.status ?? 'PENDING',
       patientName: `${this.crypto.decryptText(row.names_cipher, `patient:${row.patientId}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patientId}:surnames`)}`,
       medicalRecordNumber: this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patientId}:mrn`) }));
-    return { items: rows, page: current, pageSize: PAGE_SIZE, total, pages };
+    const filtered = rows.filter((row) => {
+      const date = String(row.examDate).slice(0, 10);
+      return (!search || [row.patientName, row.medicalRecordNumber, row.sourceType, row.kneeSides]
+        .some((value) => String(value).toLocaleLowerCase('es').includes(search)))
+        && (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo);
+    });
+    return paged(filtered, page);
   }
 
   @Get('reviews')
-  async reviews(@Query('page') pageValue: string | undefined, @CurrentUser() user: AuthUser) {
+  async reviews(
+    @Query('page') pageValue: string | undefined,
+    @Query('search') searchValue: string | undefined,
+    @Query('dateFrom') dateFromValue: string | undefined,
+    @Query('dateTo') dateToValue: string | undefined,
+    @Query('status') statusValue: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
     const page = pageNumber(pageValue);
+    const search = optionalText(searchValue, 'Búsqueda', 100)?.toLocaleLowerCase('es') ?? '';
+    const dateFrom = dateFromValue ? isoDate(dateFromValue, 'Fecha desde') : null;
+    const dateTo = dateToValue ? isoDate(dateToValue, 'Fecha hasta') : null;
+    if (dateFrom && dateTo && dateFrom > dateTo) throw new BadRequestException('La fecha desde no puede ser posterior a la fecha hasta');
+    const status = statusValue && statusValue !== 'ALL' ? optionalText(statusValue, 'Estado', 20) : null;
+    if (status && !['PENDING', 'CONFIRMED', 'CORRECTED', 'REJECTED'].includes(status)) throw new BadRequestException('Estado de revisión inválido');
     const joins = `FROM model_predictions mp JOIN knee_observations k ON k.id=mp.observation_id JOIN radiographic_studies s ON s.id=k.study_id
       JOIN clinical_episodes e ON e.id=s.episode_id JOIN patients p ON p.id=e.patient_id`;
     const filter = `WHERE mp.model_name='Ensemble-v2' AND p.owner_clinician_id=$1`;
-    const total = Number((await this.db.query<{ count: string }>(`SELECT count(*)::text count ${joins} ${filter}`, [user.id])).rows[0].count);
-    const pages = Math.max(1, Math.ceil(total / PAGE_SIZE)); const current = Math.min(page, pages);
     const rows = (await this.db.query<any>(
-      `SELECT mp.id,mp.created_at "createdAt",mp.probabilities,k.knee_side "kneeSide",s.exam_date "examDate",p.id "patientId",
+      `SELECT mp.id,mp.created_at "createdAt",mp.probabilities,k.knee_side "kneeSide",s.exam_date "examDate",e.id "episodeId",p.id "patientId",
        p.names_cipher,p.surnames_cipher,p.medical_record_cipher,cr.decision,cr.confirmed_kl "confirmedKl",cr.reviewed_at "reviewedAt" ${joins}
        LEFT JOIN LATERAL (SELECT * FROM clinician_reviews WHERE prediction_id=mp.id ORDER BY reviewed_at DESC LIMIT 1) cr ON true
-       ${filter} ORDER BY mp.created_at DESC LIMIT ${PAGE_SIZE} OFFSET ${(current - 1) * PAGE_SIZE}`, [user.id],
+       ${filter} ORDER BY s.exam_date DESC,k.knee_side,k.id`, [user.id],
     )).rows.map((row) => ({ id: row.id, createdAt: row.createdAt, probabilities: row.probabilities, kneeSide: row.kneeSide,
-      examDate: row.examDate, patientId: row.patientId, decision: row.decision, confirmedKl: row.confirmedKl, reviewedAt: row.reviewedAt,
+      examDate: row.examDate, episodeId: row.episodeId, patientId: row.patientId, decision: row.decision, confirmedKl: row.confirmedKl, reviewedAt: row.reviewedAt,
       patientName: `${this.crypto.decryptText(row.names_cipher, `patient:${row.patientId}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patientId}:surnames`)}`,
       medicalRecordNumber: this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patientId}:mrn`) }));
-    return { items: rows, page: current, pageSize: PAGE_SIZE, total, pages };
+    const filtered = rows.filter((row) => {
+      const date = String(row.examDate).slice(0, 10);
+      const rowStatus = row.decision ?? 'PENDING';
+      return (!search || [row.patientName, row.medicalRecordNumber, row.kneeSide]
+        .some((value) => String(value).toLocaleLowerCase('es').includes(search)))
+        && (!dateFrom || date >= dateFrom) && (!dateTo || date <= dateTo) && (!status || rowStatus === status);
+    });
+    return paged(filtered, page);
   }
 
   @Post('studies/preflight')
