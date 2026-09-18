@@ -26,6 +26,7 @@ import {
   Plus,
   Settings,
   ShieldCheck,
+  Sparkles,
   Stethoscope,
   UserRound,
   UserRoundCog,
@@ -51,6 +52,7 @@ type AnalysisSummary = {
   episodeId: string;
   episodeDate: string;
   studyId: string;
+  observationId: string;
   examDate: string;
   kneeSide: "L" | "R";
   sourceType: string;
@@ -63,6 +65,21 @@ type AnalysisSummary = {
   totalProcessingSeconds: number;
   gradcams?: any[];
   reports?: any[];
+  recommendation?: ClinicalRecommendation | null;
+  note?: ClinicalNote | null;
+};
+type ClinicalNote = { id: string; content: string; updatedAt: string };
+type ClinicalRecommendation = {
+  id: string;
+  scope: "STUDY" | "PATIENT";
+  content: {
+    headline: string;
+    summary: string;
+    recommendation: string;
+    priority: "routine" | "soon" | "prompt";
+  };
+  generatedAt: string;
+  providerModel: string;
 };
 type AdminUser = {
   id: string;
@@ -1418,7 +1435,7 @@ function ClinicianDashboard({
         <Metric
           label="Reportes"
           value={data.reports}
-          detail="Borradores generados"
+          detail="Reportes generados"
         />
       </div>
       <div className="quick-grid">
@@ -1441,7 +1458,7 @@ function ClinicianDashboard({
             <FileText size={22} />
           </span>
           <b>Reportes recientes</b>
-          <small>Consulte borradores generados.</small>
+                  <small>Consulte los reportes generados.</small>
         </button>
       </div>
     </Page>
@@ -1458,16 +1475,17 @@ function PatientsPage({
   const [data, setData] = useState<Paged<Patient>>();
   const [page, setPage] = useState(1);
   const [search, setSearch] = useState("");
+  const [status, setStatus] = useState<"active" | "archived" | "all">("all");
   const [modal, setModal] = useState(false);
   const load = () =>
     api<Paged<Patient>>(
-      `/api/patients?page=${page}&search=${encodeURIComponent(search)}`,
+      `/api/patients?page=${page}&search=${encodeURIComponent(search)}&status=${status}`,
     )
       .then(setData)
       .catch((error) => notify(error.message, "error"));
   useEffect(() => {
     void load();
-  }, [page, search]);
+  }, [page, search, status]);
   return (
     <Page
       title="Mis pacientes"
@@ -1478,17 +1496,36 @@ function PatientsPage({
         </button>
       }
     >
-      <div className="toolbar">
-        <input
-          type="search"
-          placeholder="Buscar por nombre, DNI o historia clínica"
-          value={search}
-          onChange={(event) => {
-            setSearch(event.target.value.slice(0, 100));
-            setPage(1);
-          }}
-        />
-      </div>
+      <section className="surface filter-panel">
+        <div className="filter-grid patient-filter-grid">
+          <label>Buscar
+            <input
+              type="search"
+              maxLength={100}
+              placeholder="Nombre, DNI o historia clínica"
+              value={search}
+              onChange={(event) => {
+                setSearch(event.target.value);
+                setPage(1);
+              }}
+            />
+          </label>
+          <label>Estado
+            <select value={status} onChange={(event) => { setStatus(event.target.value as typeof status); setPage(1); }}>
+              <option value="all">Todos</option>
+              <option value="active">Activos</option>
+              <option value="archived">Archivados</option>
+            </select>
+          </label>
+        </div>
+        {(search || status !== "all") && (
+          <div className="filter-clear-row">
+            <button className="filter-clear-button" onClick={() => { setSearch(""); setStatus("all"); setPage(1); }}>
+              Limpiar filtros
+            </button>
+          </div>
+        )}
+      </section>
       <section className="surface table-card">
         {!data ? (
           <Spinner />
@@ -1513,16 +1550,19 @@ function PatientsPage({
               <tbody>
                 {data.items.map((patient) => (
                   <tr key={patient.id}>
-                    <td data-label="Paciente">
-                      <b>
-                        {patient.surnames}, {patient.names}
-                      </b>
-                      <small>{patient.email ?? "Sin correo"}</small>
+                    <td data-label="Paciente" className="patient-table-cell">
+                      <div className="patient-table-identity">
+                        <b>
+                          {patient.surnames}, {patient.names}
+                        </b>
+                        <small>{patient.email ?? "Sin correo"}</small>
+                        {patient.archived && <Badge tone="neutral">Archivado</Badge>}
+                      </div>
                     </td>
                     <td data-label="Historia clínica">
                       <Badge tone="info">{patient.medicalRecordNumber}</Badge>
                     </td>
-                    <td data-label="DNI">••••{patient.dni.slice(-4)}</td>
+                    <td data-label="DNI">{patient.dni}</td>
                     <td data-label="Celular">{patient.phone}</td>
                     <td data-label="Registro">
                       {formatDate(patient.createdAt)}
@@ -1635,6 +1675,91 @@ function AnalysisCard({
   );
 }
 
+function RecommendationCard({
+  value,
+  general = false,
+}: {
+  value?: ClinicalRecommendation | null;
+  general?: boolean;
+}) {
+  if (!value?.content || typeof value.content.recommendation !== "string") return null;
+  const labels = { routine: "Seguimiento habitual", soon: "Revisión próxima", prompt: "Revisión prioritaria" };
+  return (
+    <section className={`surface recommendation-card ${general ? "general" : ""}`}>
+      <div className="recommendation-icon"><Sparkles size={20} /></div>
+      <div>
+        <div className="recommendation-heading">
+          <span className="overline">{general ? "Orientación longitudinal" : "Orientación del análisis"}</span>
+          <Badge tone={value.content.priority === "prompt" ? "warning" : value.content.priority === "soon" ? "info" : "neutral"}>
+            {labels[value.content.priority]}
+          </Badge>
+        </div>
+        <h2>{value.content.headline}</h2>
+        <p>{value.content.summary}</p>
+        <p className="recommendation-guidance">{value.content.recommendation}</p>
+        <small>Orientación automática de apoyo. Debe validarse con el criterio clínico responsable.</small>
+      </div>
+    </section>
+  );
+}
+
+function ClinicalNoteCard({
+  title,
+  value,
+  readOnly = false,
+  onSave,
+}: {
+  title: string;
+  value?: ClinicalNote | null;
+  readOnly?: boolean;
+  onSave?: (content: string) => Promise<void>;
+}) {
+  const [content, setContent] = useState(value?.content ?? "");
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setContent(value?.content ?? ""), [value?.id, value?.content]);
+  if (readOnly && !value?.content) return null;
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    if (!onSave) return;
+    setSaving(true);
+    try {
+      await onSave(content.trim());
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <section className="surface clinical-note-card">
+      <div className="clinical-note-heading">
+        <div>
+          <span className="overline">Registro del médico responsable</span>
+          <h2>{title}</h2>
+        </div>
+        {value?.updatedAt && <small>Actualizada {formatDate(value.updatedAt)}</small>}
+      </div>
+      {readOnly ? (
+        <p className="clinical-note-readonly">{value?.content}</p>
+      ) : (
+        <form onSubmit={save}>
+          <textarea
+            rows={5}
+            maxLength={1200}
+            value={content}
+            placeholder="Registre observaciones clínicas relevantes, criterios de seguimiento o acuerdos con el paciente."
+            onChange={(event) => setContent(event.target.value)}
+          />
+          <div className="clinical-note-actions">
+            <small>{content.length}/1200 caracteres</small>
+            <button className="button secondary" disabled={saving || content.trim() === (value?.content ?? "")}>
+              {saving ? "Guardando…" : value?.content ? "Actualizar nota" : "Guardar nota"}
+            </button>
+          </div>
+        </form>
+      )}
+    </section>
+  );
+}
+
 function AnalysisCarousel({
   analyses,
   open,
@@ -1697,24 +1822,51 @@ function PatientDetail({
   const [analyses, setAnalyses] = useState<AnalysisSummary[]>([]);
   const [profile, setProfile] = useState<ClinicalProfile | null>(null);
   const [history, setHistory] = useState<any[]>([]);
+  const [recommendation, setRecommendation] = useState<ClinicalRecommendation | null>(null);
+  const [generalNote, setGeneralNote] = useState<ClinicalNote | null>(null);
   const [editing, setEditing] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [priorOpen, setPriorOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const load = async () => {
     try {
-      const [p, e, a, c, h] = await Promise.all([
-        api<Patient>(`/api/patients/${id}`),
+      const p = await api<Patient>(`/api/patients/${id}`);
+      setPatient(p);
+      const [e, a, c, h, r, n] = await Promise.allSettled([
         api<any[]>(`/api/patients/${id}/episodes`),
         api<AnalysisSummary[]>(`/api/patients/${id}/analyses`),
         api<ClinicalProfile | null>(`/api/patients/${id}/clinical-profile`),
         api<any[]>(`/api/patients/${id}/prior-exams`),
+        api<ClinicalRecommendation | null>(`/api/patients/${id}/recommendation`),
+        api<ClinicalNote | null>(`/api/patients/${id}/clinical-note`),
       ]);
-      setPatient(p);
-      setEpisodes(e);
-      setAnalyses(a);
-      setProfile(c);
-      setHistory(h);
+      if (e.status === "fulfilled") setEpisodes(e.value);
+      if (a.status === "fulfilled") setAnalyses(a.value);
+      if (c.status === "fulfilled") setProfile(c.value);
+      if (h.status === "fulfilled") setHistory(h.value);
+      if (r.status === "fulfilled") setRecommendation(r.value?.content ? r.value : null);
+      if (n.status === "fulfilled") setGeneralNote(n.value);
+      if ([e, a, c, h].some((result) => result.status === "rejected")) {
+        notify("Algunos datos complementarios no pudieron cargarse", "warning");
+      }
+      if (!p.archived && a.status === "fulfilled" && a.value.length) {
+        const latest = [...a.value].sort((left, right) =>
+          String(right.examDate).localeCompare(String(left.examDate)) || right.observationId.localeCompare(left.observationId)
+        )[0];
+        void post<any>(`/api/observations/${latest.observationId}/recommendations`, {})
+          .then((generated) => {
+            if (generated.general?.content) setRecommendation(generated.general);
+            else if (a.value.length === 1 && generated.individual?.content) setRecommendation(generated.individual);
+            if (generated.individual?.content) {
+              setAnalyses((current) => current.map((item) =>
+                item.observationId === latest.observationId
+                  ? { ...item, recommendation: generated.individual }
+                  : item
+              ));
+            }
+          })
+          .catch(() => undefined);
+      }
     } catch (error: any) {
       notify(error.message, "error");
     }
@@ -1727,7 +1879,8 @@ function PatientDetail({
     try {
       await api(`/api/patients/${id}`, { method: "DELETE" });
       notify("Paciente archivado", "success");
-      navigate({ name: "patients" });
+      setArchiving(false);
+      void load();
     } catch (error: any) {
       notify(error.message, "error");
     }
@@ -1743,27 +1896,45 @@ function PatientDetail({
     }
     navigate({ name: "analysis", patientId: id });
   }
+  async function saveGeneralNote(content: string) {
+    try {
+      const saved = await api<ClinicalNote | null>(`/api/patients/${id}/clinical-note`, {
+        method: "PATCH",
+        body: JSON.stringify({ content }),
+      });
+      setGeneralNote(saved);
+      notify(content ? "Nota general guardada" : "Nota general eliminada", "success");
+    } catch (error: any) {
+      notify(error.message, "error");
+      throw error;
+    }
+  }
   return (
     <Page
       title={`${patient.surnames}, ${patient.names}`}
       subtitle={`${patient.medicalRecordNumber} · Historia clínica`}
       action={
-        <div className="head-actions">
-          <button className="button secondary" onClick={() => setEditing(true)}>
-            <UserRoundCog size={17} /> Editar paciente
-          </button>
-          <button className="button primary" onClick={newAnalysis}>
-            <BarChart3 size={17} /> Nuevo análisis
-          </button>
-          <button
-            className="button danger-soft"
-            onClick={() => setArchiving(true)}
-          >
-            <Archive size={17} /> Archivar
-          </button>
-        </div>
+        patient.archived ? <Badge tone="neutral">Paciente archivado</Badge> : (
+          <div className="head-actions">
+            <button className="button secondary" onClick={() => setEditing(true)}>
+              <UserRoundCog size={17} /> Editar paciente
+            </button>
+            <button className="button primary" onClick={newAnalysis}>
+              <BarChart3 size={17} /> Nuevo análisis
+            </button>
+            <button className="button danger-soft" onClick={() => setArchiving(true)}>
+              <Archive size={17} /> Archivar
+            </button>
+          </div>
+        )
       }
     >
+      {patient.archived && (
+        <div className="archive-banner">
+          <Archive size={19} />
+          <div><b>Historia clínica archivada</b><span>El contenido se conserva para consulta. No se permiten nuevos análisis ni modificaciones.</span></div>
+        </div>
+      )}
       <section className="surface patient-overview-card">
         <div className="identity-card">
           <div className="avatar">
@@ -1829,6 +2000,13 @@ function PatientDetail({
           </div>
         </div>
       </section>
+      <RecommendationCard value={recommendation} general={analyses.length >= 2} />
+      <ClinicalNoteCard
+        title="Nota clínica general"
+        value={generalNote}
+        readOnly={patient.archived}
+        onSave={saveGeneralNote}
+      />
       <section
         className={`surface clinical-profile-card ${profile ? "" : "incomplete"}`}
       >
@@ -1845,12 +2023,11 @@ function PatientDetail({
               : "Estos datos forman parte de la historia clínica y son necesarios antes de analizar una radiografía."}
           </p>
         </div>
-        <button
-          className="button secondary"
-          onClick={() => setProfileOpen(true)}
-        >
-          {profile ? "Actualizar" : "Completar ahora"}
-        </button>
+        {!patient.archived && (
+          <button className="button secondary" onClick={() => setProfileOpen(true)}>
+            {profile ? "Actualizar" : "Completar ahora"}
+          </button>
+        )}
       </section>
       <section className="surface timeline-card">
         <div className="section-head">
@@ -1896,12 +2073,11 @@ function PatientDetail({
             <span className="overline">Antecedentes externos</span>
             <h2>Exámenes previos no analizados en el sistema</h2>
           </div>
-          <button
-            className="button secondary"
-            onClick={() => setPriorOpen(true)}
-          >
-            + Agregar antecedente
-          </button>
+          {!patient.archived && (
+            <button className="button secondary" onClick={() => setPriorOpen(true)}>
+              + Agregar antecedente
+            </button>
+          )}
         </div>
         {history.length === 0 ? (
           <p className="muted">
@@ -1917,18 +2093,13 @@ function PatientDetail({
                   Rodilla {item.kneeSide === "L" ? "izquierda" : "derecha"} · KL{" "}
                   {item.confirmedKl} · Dolor {item.painScore ?? "N/D"}
                 </span>
-                <button
-                  className="icon-button danger-text"
-                  onClick={async () => {
-                    await api(`/api/patients/${id}/prior-exams/${item.id}`, {
-                      method: "DELETE",
-                    });
+                {!patient.archived && (
+                  <button className="icon-button danger-text" onClick={async () => {
+                    await api(`/api/patients/${id}/prior-exams/${item.id}`, { method: "DELETE" });
                     notify("Antecedente eliminado", "success");
                     void load();
-                  }}
-                >
-                  Eliminar
-                </button>
+                  }}>Eliminar</button>
+                )}
               </article>
             ))}
           </div>
@@ -1986,10 +2157,23 @@ function EpisodeAnalysis({
   const [data, setData] = useState<any>();
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState<any>();
-  const load = () =>
-    api(`/api/episodes/${episodeId}/analysis`)
-      .then(setData)
-      .catch((error) => notify(error.message, "error"));
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewStage, setReviewStage] = useState("");
+  const recommendationRecovery = useRef(new Set<string>());
+  const load = async () => {
+    try {
+      const loaded: any = await api(`/api/episodes/${episodeId}/analysis`);
+      setData(loaded);
+      const current = loaded.studies?.find((study: AnalysisSummary) => study.status === "COMPLETED");
+      if (!loaded.archived && current && !recommendationRecovery.current.has(current.observationId)) {
+        recommendationRecovery.current.add(current.observationId);
+        await post(`/api/observations/${current.observationId}/recommendations`, {}).catch(() => undefined);
+        setData(await api(`/api/episodes/${episodeId}/analysis`));
+      }
+    } catch (error: any) {
+      notify(error.message, "error");
+    }
+  };
   useEffect(() => {
     void load();
   }, [episodeId]);
@@ -2027,6 +2211,10 @@ function EpisodeAnalysis({
   }
   async function review(event: FormEvent) {
     event.preventDefault();
+    if (reviewBusy) return;
+    setReviewBusy(true);
+    setReviewStage("Guardando la revisión del grado KL…");
+    let recommendationUpdated = true;
     try {
       const observationId = data.studies.find(
         (study: AnalysisSummary) => study.ensemble?.id === reviewing.id,
@@ -2038,16 +2226,46 @@ function EpisodeAnalysis({
             : "CORRECTED",
         confirmedKl: Number(reviewing.kl),
       });
-      if (observationId)
+      if (observationId) {
+        setReviewStage("Recalculando los riesgos clínicos…");
         await Promise.allSettled([
           post(`/api/observations/${observationId}/risks/arthroplasty`, {}),
           post(`/api/observations/${observationId}/risks/progression`, {}),
         ]);
-      notify("Revisión registrada y riesgos actualizados", "success");
+        setReviewStage("Actualizando la interpretación y recomendación…");
+        try {
+          await post(`/api/observations/${observationId}/recommendations`, {});
+        } catch {
+          recommendationUpdated = false;
+        }
+      }
+      setReviewStage("Actualizando los resultados en pantalla…");
+      await load();
+      notify(
+        recommendationUpdated
+          ? "Revisión, riesgos e interpretación actualizados"
+          : "KL y riesgos guardados; la interpretación de IA no pudo actualizarse",
+        recommendationUpdated ? "success" : "warning",
+      );
       setReviewing(undefined);
-      void load();
     } catch (error: any) {
       notify(error.message, "error");
+    } finally {
+      setReviewBusy(false);
+      setReviewStage("");
+    }
+  }
+  async function saveStudyNote(observationId: string, content: string) {
+    try {
+      await api(`/api/observations/${observationId}/clinical-note`, {
+        method: "PATCH",
+        body: JSON.stringify({ content }),
+      });
+      notify(content ? "Nota del análisis guardada" : "Nota del análisis eliminada", "success");
+      await load();
+    } catch (error: any) {
+      notify(error.message, "error");
+      throw error;
     }
   }
   if (!data) return <Spinner />;
@@ -2064,22 +2282,18 @@ function EpisodeAnalysis({
         </button>
       }
     >
-      <div className="episode-actions">
-        <button
-          className="button primary"
-          disabled={busy}
-          onClick={() => void report("EPISODE")}
-        >
-          <Download size={17} /> Descargar PDF del episodio
-        </button>
-        <button
-          className="button secondary"
-          disabled={busy}
-          onClick={() => void report("LONGITUDINAL")}
-        >
-          <Download size={17} /> Descargar PDF longitudinal
-        </button>
-      </div>
+      {data.archived ? (
+        <div className="archive-banner compact"><Archive size={18} /><div><b>Consulta de archivo</b><span>Los resultados existentes permanecen disponibles en modo solo lectura.</span></div></div>
+      ) : (
+        <div className="episode-actions">
+          <button className="button primary" disabled={busy} onClick={() => void report("EPISODE")}>
+            <Download size={17} /> Descargar PDF del episodio
+          </button>
+          <button className="button secondary" disabled={busy} onClick={() => void report("LONGITUDINAL")}>
+            <Download size={17} /> Descargar PDF longitudinal
+          </button>
+        </div>
+      )}
       {data.studies.map((study: AnalysisSummary) => {
         const prediction = study.ensemble?.probabilities;
         return (
@@ -2115,7 +2329,7 @@ function EpisodeAnalysis({
                     <dd>{study.ensemble?.device ?? "—"}</dd>
                   </div>
                 </dl>
-                {prediction && (
+                {prediction && !data.archived && (
                   <button
                     className="button secondary"
                     onClick={() =>
@@ -2164,6 +2378,13 @@ function EpisodeAnalysis({
                 </div>
               </section>
             )}
+            <RecommendationCard value={study.recommendation} />
+            <ClinicalNoteCard
+              title="Nota clínica del análisis"
+              value={study.note}
+              readOnly={data.archived}
+              onSave={(content) => saveStudyNote(study.observationId, content)}
+            />
             {study.gradcams?.length ? (
               <section className="surface gradcam-section">
                 <div className="section-head">
@@ -2190,13 +2411,15 @@ function EpisodeAnalysis({
       {reviewing && (
         <Modal
           title="Revisión médica de KL"
-          onClose={() => setReviewing(undefined)}
+          onClose={() => !reviewBusy && setReviewing(undefined)}
+          dismissible={!reviewBusy}
         >
           <form className="form-stack" onSubmit={review}>
             <label>
               Grado KL confirmado
               <select
                 value={reviewing.kl}
+                disabled={reviewBusy}
                 onChange={(event) =>
                   setReviewing({ ...reviewing, kl: event.target.value })
                 }
@@ -2210,15 +2433,28 @@ function EpisodeAnalysis({
               Esta revisión no bloquea la visualización. Al cambiar el KL deberá
               volver a generarse el reporte para reflejarlo.
             </p>
+            {reviewBusy && (
+              <div className="review-progress" role="status" aria-live="polite">
+                <i aria-hidden="true" />
+                <div>
+                  <b>{reviewStage}</b>
+                  <small>Este proceso puede tardar unos segundos.</small>
+                </div>
+              </div>
+            )}
             <div className="modal-actions">
               <button
                 type="button"
                 className="button secondary"
                 onClick={() => setReviewing(undefined)}
+                disabled={reviewBusy}
               >
                 Cancelar
               </button>
-              <button className="button primary">Guardar revisión</button>
+              <button className="button primary" disabled={reviewBusy}>
+                {reviewBusy && <i className="button-spinner" aria-hidden="true" />}
+                {reviewBusy ? "Actualizando análisis…" : "Guardar revisión"}
+              </button>
             </div>
           </form>
         </Modal>
@@ -2268,9 +2504,20 @@ function SimplePagedPage({
 }) {
   const [data, setData] = useState<Paged<any>>();
   const [page, setPage] = useState(1);
+  const [search, setSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [status, setStatus] = useState("ALL");
   useEffect(() => {
-    void api<Paged<any>>(`/api/${kind}?page=${page}`).then(setData);
-  }, [kind, page]);
+    const query = new URLSearchParams({ page: String(page) });
+    if (search.trim()) query.set("search", search.trim());
+    if (dateFrom) query.set("dateFrom", dateFrom);
+    if (dateTo) query.set("dateTo", dateTo);
+    if (kind === "reviews" && status !== "ALL") query.set("status", status);
+    if (kind === "reports" && status !== "ALL") query.set("reportType", status);
+    void api<Paged<any>>(`/api/${kind}?${query}`).then(setData);
+  }, [kind, page, search, dateFrom, dateTo, status]);
+  useEffect(() => { setPage(1); setSearch(""); setDateFrom(""); setDateTo(""); setStatus("ALL"); }, [kind]);
   const title =
     kind === "studies"
       ? "Estudios"
@@ -2285,9 +2532,51 @@ function SimplePagedPage({
           ? "Radiografías y estado de procesamiento."
           : kind === "reviews"
             ? "Clasificaciones KL y revisión médica opcional."
-            : "Borradores por episodio y longitudinales."
+            : "Reportes por episodio y longitudinales."
       }
     >
+      <section className="surface filter-panel">
+        <div className={`filter-grid ${kind === "studies" ? "three" : "four"}`}>
+          <label className="filter-search">Buscar
+            <input
+              type="search"
+              maxLength={100}
+              placeholder="Paciente, HC o resultado"
+              value={search}
+              onChange={(event) => { setSearch(event.target.value); setPage(1); }}
+            />
+          </label>
+          <label>Desde
+            <input type="date" max={dateTo || today} value={dateFrom} onChange={(event) => { setDateFrom(event.target.value); setPage(1); }} />
+          </label>
+          <label>Hasta
+            <input type="date" min={dateFrom || undefined} max={today} value={dateTo} onChange={(event) => { setDateTo(event.target.value); setPage(1); }} />
+          </label>
+          {kind !== "studies" && (
+            <label>{kind === "reviews" ? "Estado" : "Tipo de reporte"}
+              <select value={status} onChange={(event) => { setStatus(event.target.value); setPage(1); }}>
+                <option value="ALL">Todos</option>
+                {kind === "reviews" ? <>
+                  <option value="PENDING">Pendiente</option>
+                  <option value="CONFIRMED">Confirmado</option>
+                  <option value="CORRECTED">Corregido</option>
+                  <option value="REJECTED">Rechazado</option>
+                </> : <>
+                  <option value="EPISODE">Episodio</option>
+                  <option value="LONGITUDINAL">Longitudinal</option>
+                </>}
+              </select>
+            </label>
+          )}
+        </div>
+        {(search || dateFrom || dateTo || status !== "ALL") && (
+          <div className="filter-clear-row">
+            <button className="filter-clear-button" onClick={() => { setSearch(""); setDateFrom(""); setDateTo(""); setStatus("ALL"); setPage(1); }}>
+              Limpiar filtros
+            </button>
+          </div>
+        )}
+      </section>
       <section className="surface table-card">
         {!data ? (
           <Spinner />
@@ -2327,7 +2616,7 @@ function SimplePagedPage({
                           {item.confirmedKl ?? item.probabilities?.predictedKl}
                         </Badge>
                       ) : kind === "reports" ? (
-                        item.reportType
+                        <Badge tone="neutral">{item.reportType === "LONGITUDINAL" ? "Longitudinal" : "Episodio"}</Badge>
                       ) : (
                         <Badge tone="info">{item.status}</Badge>
                       )}
@@ -2345,12 +2634,13 @@ function SimplePagedPage({
                           className="button table-action"
                           onClick={() =>
                             navigate({
-                              name: "patient",
+                              name: "episode-analysis",
                               patientId: item.patientId,
+                              episodeId: item.episodeId,
                             })
                           }
                         >
-                          Ver paciente
+                          {kind === "reviews" ? "Revisar" : "Ver análisis"}
                         </button>
                       )}
                     </td>
@@ -2386,6 +2676,11 @@ function AnalysisLoader({
       ),
     ])
       .then(([loadedPatient, profile]) => {
+        if (loadedPatient.archived) {
+          notify("El paciente está archivado y su historia es de solo lectura", "warning");
+          onDone();
+          return;
+        }
         if (!completeClinicalProfile(profile)) {
           notify(
             "La historia clínica debe estar completa antes de iniciar un análisis",

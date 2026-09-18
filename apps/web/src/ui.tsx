@@ -14,24 +14,30 @@ export function Modal({
   children,
   onClose,
   wide = false,
+  dismissible = true,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
+  dismissible?: boolean;
 }) {
   return (
-    <Dialog.Root open onOpenChange={(open) => !open && onClose()}>
+    <Dialog.Root open onOpenChange={(open) => !open && dismissible && onClose()}>
       <Dialog.Portal>
         <Dialog.Overlay className="modal-backdrop" />
-        <Dialog.Content className={`modal ${wide ? "modal-wide" : ""}`}>
+        <Dialog.Content
+          className={`modal ${wide ? "modal-wide" : ""}`}
+          onEscapeKeyDown={(event) => !dismissible && event.preventDefault()}
+          onPointerDownOutside={(event) => !dismissible && event.preventDefault()}
+        >
           <header className="modal-head">
             <div>
               <span className="overline">Formulario</span>
               <Dialog.Title>{title}</Dialog.Title>
             </div>
             <Dialog.Close asChild>
-              <button className="icon-button modal-close" aria-label="Cerrar">
+              <button className="icon-button modal-close" aria-label="Cerrar" disabled={!dismissible}>
                 <X size={18} />
               </button>
             </Dialog.Close>

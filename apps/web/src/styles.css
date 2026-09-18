@@ -641,6 +641,14 @@ td small {
   color: var(--muted);
   margin-top: 0.2rem;
 }
+.patient-table-identity {
+  display: grid;
+  justify-items: start;
+  min-width: 0;
+}
+.patient-table-identity .badge {
+  margin-top: 0.48rem;
+}
 tbody tr:hover {
   background: #fbfcfb;
 }
@@ -743,6 +751,37 @@ tbody tr:hover {
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
+.button-spinner {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 15px;
+  border: 2px solid rgba(255, 255, 255, 0.45);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+.review-progress {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  border: 1px solid #d5e5e0;
+  border-radius: 12px;
+  background: #f1f8f5;
+  color: #274d45;
+}
+.review-progress > i {
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
+  border: 2.5px solid #bdd6cf;
+  border-top-color: #187568;
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+.review-progress > div { display: grid; gap: 0.15rem; }
+.review-progress b { font-size: 0.82rem; }
+.review-progress small { color: #6c7f7a; font-size: 0.72rem; }
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1330,6 +1369,13 @@ legend {
     font-weight: 700;
     text-align: left;
   }
+  .patient-table-cell .patient-table-identity {
+    justify-self: end;
+    justify-items: end;
+    min-width: 0;
+    max-width: 100%;
+    text-align: right;
+  }
   .row-actions {
     display: flex;
     justify-content: flex-end;
@@ -1406,6 +1452,230 @@ legend {
   .report-list article .button {
     width: 100%;
   }
+}
+
+/* Clinical chronology, recommendations and list filters */
+.archive-banner {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid #dce5e2;
+  border-radius: 16px;
+  color: #52645f;
+  background: #f4f7f6;
+}
+
+.archive-banner > div {
+  display: grid;
+  gap: 0.15rem;
+}
+
+.archive-banner b { color: var(--ink); }
+.archive-banner.compact { margin-bottom: 1rem; }
+
+.recommendation-card {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 1rem;
+  padding: 1.2rem 1.3rem;
+  border-color: #d6e6e1;
+  background: linear-gradient(135deg, #f2faf7 0%, #fff 72%);
+}
+
+.recommendation-card.general {
+  background: linear-gradient(135deg, #eef8f5 0%, #fff9ee 100%);
+}
+
+.recommendation-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  color: #187568;
+  border-radius: 14px;
+  background: #dff1eb;
+}
+
+.recommendation-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.recommendation-card h2 {
+  margin: 0.35rem 0 0.45rem;
+  font-size: 1.08rem;
+}
+
+.recommendation-card p { margin: 0; color: #445954; line-height: 1.6; }
+.recommendation-card ul { margin: 0.7rem 0; padding-left: 1.15rem; color: #38504a; }
+.recommendation-card li + li { margin-top: 0.28rem; }
+.recommendation-card .recommendation-guidance {
+  margin: 0.8rem 0;
+  padding: 0.78rem 0.9rem;
+  border-left: 3px solid #d2a64e;
+  border-radius: 0 10px 10px 0;
+  background: rgba(255, 249, 236, 0.72);
+  color: #304c45;
+  font-weight: 560;
+}
+.recommendation-card small { color: var(--muted); }
+.workflow-recommendation { margin: 0; }
+
+.filter-panel {
+  padding: 1rem 1.15rem;
+  margin-bottom: 1rem;
+}
+
+.filter-grid { display: grid; grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(145px, 1fr)); gap: 0.75rem; }
+.filter-grid.three { grid-template-columns: minmax(250px, 2fr) repeat(2, minmax(160px, 1fr)); }
+.filter-grid label { display: grid; gap: 0.35rem; min-width: 0; color: var(--muted); font-size: 0.72rem; font-weight: 700; }
+.filter-grid input,
+.filter-grid select { width: 100%; min-width: 0; }
+.patient-filter-grid { grid-template-columns: minmax(260px, 2fr) minmax(170px, 1fr); }
+.filter-clear-row { display: flex; justify-content: flex-end; margin-top: 0.7rem; }
+.filter-clear-button {
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #6b7d78;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1;
+  transition: color 0.18s ease, background 0.18s ease;
+}
+.filter-clear-button:hover {
+  color: #285f56;
+  background: #f0f5f3;
+}
+.filter-clear-button:focus-visible {
+  outline: 2px solid rgba(42, 133, 120, 0.28);
+  outline-offset: 2px;
+}
+
+.orientation-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.65rem;
+}
+.orientation-option {
+  display: flex !important;
+  align-items: center;
+  min-height: 44px;
+  gap: 0.65rem !important;
+  padding: 0.62rem 0.72rem;
+  border: 1px solid #dce6e3;
+  border-radius: 11px;
+  background: #f8fbfa;
+  color: #405550;
+  font-size: 0.78rem;
+  line-height: 1.25;
+  cursor: pointer;
+}
+.orientation-option:hover { border-color: #b9d1cb; background: #f3f8f6; }
+.orientation-option input[type="checkbox"] {
+  appearance: none;
+  display: grid;
+  place-content: center;
+  flex: 0 0 18px;
+  width: 18px;
+  height: 18px;
+  min-height: 18px !important;
+  max-height: 18px;
+  margin: 0;
+  padding: 0;
+  border: 1.5px solid #9eb5af;
+  border-radius: 5px;
+  background: #fff;
+  cursor: pointer;
+}
+.orientation-option input[type="checkbox"]::before {
+  content: "";
+  width: 8px;
+  height: 4px;
+  border: solid #fff;
+  border-width: 0 0 2px 2px;
+  transform: rotate(-45deg) scale(0);
+  transition: transform 0.12s ease;
+}
+.orientation-option input[type="checkbox"]:checked {
+  border-color: #23796d;
+  background: #23796d;
+}
+.orientation-option input[type="checkbox"]:checked::before { transform: rotate(-45deg) scale(1); }
+.orientation-option input[type="checkbox"]:focus-visible {
+  outline: 2px solid rgba(42, 133, 120, 0.3);
+  outline-offset: 2px;
+}
+.orientation-option:has(input:disabled) {
+  color: #92a09c;
+  background: #f5f7f6;
+  cursor: not-allowed;
+}
+.orientation-option input[type="checkbox"]:disabled { cursor: not-allowed; opacity: 0.65; }
+
+.clinical-note-card {
+  padding: 1.15rem 1.25rem;
+  border-color: #dce7e3;
+}
+.clinical-note-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+.clinical-note-heading h2 {
+  margin: 0.28rem 0 0;
+  font-size: 1.02rem;
+}
+.clinical-note-heading > small {
+  color: var(--muted);
+  white-space: nowrap;
+}
+.clinical-note-card textarea {
+  width: 100%;
+  min-height: 112px;
+  resize: vertical;
+  line-height: 1.55;
+}
+.clinical-note-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 0.7rem;
+}
+.clinical-note-actions small { color: var(--muted); }
+.clinical-note-readonly {
+  margin: 0;
+  color: #405550;
+  line-height: 1.65;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 850px) {
+  .filter-grid,
+  .filter-grid.three { grid-template-columns: 1fr 1fr; }
+  .filter-search { grid-column: 1 / -1; }
+  .patient-filter-grid { grid-template-columns: minmax(0, 1fr) minmax(150px, 0.7fr); }
+}
+
+@media (max-width: 560px) {
+  .filter-grid,
+  .filter-grid.three { grid-template-columns: minmax(0, 1fr); }
+  .patient-filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .filter-search { grid-column: auto; }
+  .recommendation-card { grid-template-columns: minmax(0, 1fr); }
+  .recommendation-heading { align-items: flex-start; flex-direction: column; gap: 0.45rem; }
+  .orientation-options { grid-template-columns: minmax(0, 1fr); }
+  .clinical-note-heading,
+  .clinical-note-actions { align-items: stretch; flex-direction: column; }
+  .clinical-note-heading > small { white-space: normal; }
+  .clinical-note-actions .button { width: 100%; }
 }
 
 /* Expediente clínico y análisis visual */

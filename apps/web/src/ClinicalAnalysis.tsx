@@ -4,6 +4,7 @@ import {
   BrainCircuit,
   ScanEye,
   ScanLine,
+  Sparkles,
   UploadCloud,
 } from "lucide-react";
 import { api, post } from "./api";
@@ -279,8 +280,8 @@ function StudyUpload({
             </div>
             <details className="span advanced">
               <summary>Correcciones avanzadas de orientación</summary>
-              <div className="check-grid">
-                <label>
+              <div className="check-grid orientation-options">
+                <label className="orientation-option">
                   <input
                     type="checkbox"
                     checked={advanced.invert}
@@ -288,10 +289,10 @@ function StudyUpload({
                     onChange={(event) =>
                       setAdvanced({ ...advanced, invert: event.target.checked })
                     }
-                  />{" "}
-                  Invertir polaridad DICOM
+                  />
+                  <span>Invertir polaridad DICOM</span>
                 </label>
-                <label>
+                <label className="orientation-option">
                   <input
                     type="checkbox"
                     checked={advanced.swap}
@@ -299,8 +300,8 @@ function StudyUpload({
                     onChange={(event) =>
                       setAdvanced({ ...advanced, swap: event.target.checked })
                     }
-                  />{" "}
-                  Intercambiar lados
+                  />
+                  <span>Intercambiar lados</span>
                 </label>
               </div>
             </details>
@@ -374,6 +375,7 @@ function AutomaticWorkflow({
     Array<{ backbone: string; targetKl: number; dataUrl: string }>
   >([]);
   const [risk, setRisk] = useState<any>({});
+  const [recommendation, setRecommendation] = useState<any>();
   const [stage, setStage] = useState("Clasificando la radiografía…");
   const [error, setError] = useState("");
 
@@ -443,6 +445,16 @@ function AutomaticWorkflow({
                     (progression.reason as Error)?.message ?? "No disponible",
                 },
         });
+        setStage("Preparando orientación clínica…");
+        try {
+          const generated = await post<any>(
+            `/api/observations/${ids.observationId}/recommendations`,
+            {},
+          );
+          if (!cancelled) setRecommendation(generated.individual);
+        } catch {
+          // La orientación externa es complementaria y no debe invalidar el análisis local.
+        }
         setStage("Análisis completo");
         notify("Análisis y riesgos registrados automáticamente", "success");
       } catch (reason: any) {
@@ -554,6 +566,23 @@ function AutomaticWorkflow({
               <i /> Generando mapas Grad-CAM…
             </div>
           )}
+        </section>
+      )}
+      {recommendation && (
+        <section className="surface analysis-card recommendation-card workflow-recommendation">
+          <div className="recommendation-icon"><Sparkles size={20} /></div>
+          <div>
+            <div className="recommendation-heading">
+              <span className="overline">Orientación del análisis</span>
+              <Badge tone={recommendation.content.priority === "prompt" ? "warning" : "info"}>
+                {recommendation.content.priority === "prompt" ? "Revisión prioritaria" : recommendation.content.priority === "soon" ? "Revisión próxima" : "Seguimiento habitual"}
+              </Badge>
+            </div>
+            <h2>{recommendation.content.headline}</h2>
+            <p>{recommendation.content.summary}</p>
+            <p className="recommendation-guidance">{recommendation.content.recommendation}</p>
+            <small>Orientación automática de apoyo. Debe validarse con el criterio clínico responsable.</small>
+          </div>
         </section>
       )}
       {prediction && (
