@@ -1,0 +1,77 @@
+FROM node:24-bookworm-slim AS web-build
+
+WORKDIR /workspace
+COPY package.json package-lock.json* tsconfig.base.json ./
+COPY packages/contracts/package.json packages/contracts/tsconfig.json ./packages/contracts/
+COPY apps/api/package.json apps/api/tsconfig.json apps/api/nest-cli.json ./apps/api/
+COPY apps/web/package.json apps/web/tsconfig.json apps/web/vite.config.ts apps/web/index.html ./apps/web/
+RUN npm ci
+COPY packages/contracts/src ./packages/contracts/src
+COPY apps/api/src ./apps/api/src
+COPY apps/web/src ./apps/web/src
+COPY apps/web/public ./apps/web/public
+RUN npm run build -w @oa/contracts \
+    && npm run build -w @oa/web \
+    && npm run build -w @oa/api
+
+FROM node:24-bookworm-slim AS node-production
+
+WORKDIR /opt/oa
+COPY package.json package-lock.json* ./
+COPY packages/contracts/package.json ./packages/contracts/
+COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
+RUN npm ci --omit=dev --workspace @oa/api --include-workspace-root=false
+
+FROM python:3.12-slim-bookworm AS python-dependencies
+
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1
+WORKDIR /opt/oa/ml
+COPY services/ml/requirements.txt ./requirements.txt
+RUN pip install --index-url "${TORCH_INDEX_URL}" torch==2.8.0 torchvision==0.23.0 \
+    && pip install -r requirements.txt
+
+FROM python-dependencies AS presentation
+
+LABEL org.opencontainers.image.title="Software OA - Presentacion" \
+      org.opencontainers.image.description="Aplicacion OA autonoma con web, API, inferencia ML y PostgreSQL" \
+      org.opencontainers.image.source="https://github.com/BinsPeruWeb/software-oa-tesis"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NODE_ENV=production \
+    PORT=3000 \
+    MODEL_ROOT=/opt/oa/models \
+    ASSET_ROOT=/data/assets \
+    ML_SERVICE_URL=http://127.0.0.1:8000 \
+    DEPLOYMENT_ENV=local \
+    COOKIE_SECURE=false
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends postgresql postgresql-client libgl1 libglib2.0-0 ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=node:24-bookworm-slim /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-production /opt/oa/node_modules /opt/oa/node_modules
+COPY --from=web-build /workspace/apps/api/dist /opt/oa/api/dist
+COPY --from=web-build /workspace/apps/web/dist /opt/oa/api/public
+COPY apps/api/migrations /opt/oa/api/migrations
+COPY services/ml/app /opt/oa/ml/app
+COPY services/ml/bootstrap_models.py /opt/oa/ml/bootstrap_models.py
+COPY .models/oa-final-2026-09-03 /opt/oa/models
+COPY .env /opt/oa/config/presentation.env
+COPY docker/presentation-entrypoint.sh /usr/local/bin/oa-presentation
+
+RUN chmod 700 /usr/local/bin/oa-presentation \
+    && chmod 600 /opt/oa/config/presentation.env \
+    && mkdir -p /data/assets /data/postgres /data/runtime \
+    && chown -R postgres:postgres /data/postgres
+
+VOLUME ["/data"]
+EXPOSE 3000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=90s --retries=5 \
+  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3000/', timeout=4)" || exit 1
+
+ENTRYPOINT ["/usr/local/bin/oa-presentation"]

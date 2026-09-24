@@ -23,6 +23,48 @@ La aplicación maneja dos roles:
 Cada paciente pertenece a un único médico responsable. Su número de historia
 clínica se genera automáticamente con el formato `OA-000001`.
 
+## Imagen autónoma para presentación
+
+La variante de presentación incorpora en una sola imagen la aplicación web, la
+API, PostgreSQL, el servicio de inferencia, los modelos entrenados y la
+configuración de las integraciones. El equipo receptor solo necesita Docker;
+no requiere clonar el repositorio, descargar los modelos ni proporcionar un
+archivo `.env`.
+
+Una vez publicada la imagen, se inicia con un único comando:
+
+```bash
+docker run -d --name software-oa -p 3000:3000 \
+  -v software-oa-data:/data --restart unless-stopped \
+  diegovj24/software-oa-presentacion:1.0.1
+```
+
+En PowerShell puede escribirse en una sola línea. Después se abre
+`http://localhost:3000` y se utilizan estas credenciales iniciales:
+
+```text
+Usuario: admin@local.com
+Contraseña: admin12345
+```
+
+Cada volumen nuevo comienza con un único administrador y sin pacientes,
+estudios ni reportes. El volumen `software-oa-data` conserva la base de datos y
+los archivos al detener, eliminar o actualizar el contenedor.
+
+Para construir la imagen de presentación desde el equipo autorizado que posee
+el `.env` y los modelos locales:
+
+```bash
+docker build -f Dockerfile.presentation \
+  -t diegovj24/software-oa-presentacion:1.0.1 .
+docker push diegovj24/software-oa-presentacion:1.0.1
+```
+
+Esta variante incluye deliberadamente la configuración privada dentro de la
+imagen y está destinada únicamente a la presentación controlada. La
+arquitectura Compose descrita a continuación continúa siendo la opción de
+desarrollo y despliegue normal.
+
 ## Requisitos para ejecutar una copia clonada
 
 En el dispositivo se necesita:
