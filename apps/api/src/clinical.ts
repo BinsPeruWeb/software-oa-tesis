@@ -255,6 +255,14 @@ export class ClinicalController {
     observationId = uuid(observationId, 'Observación');
     const current = await this.currentContext(observationId, user.id);
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
+    if (yearsAt(birth, current.exam_date) <= 0) {
+      await this.db.query("DELETE FROM model_predictions WHERE observation_id=$1 AND model_name='XGBoost-v2'", [current.observation_id]);
+      return {
+        available: false,
+        klOrigin: current.kl_origin,
+        reason: 'No disponible: la fecha del examen es anterior o igual a la fecha de nacimiento registrada.',
+      };
+    }
     const sex = current.sex_cipher ? this.crypto.decryptText(current.sex_cipher, `patient:${current.patient_id}:sex`) : null;
     const history = await this.history(current.patient_id, current.knee_side, current.exam_date);
     const payload = {
@@ -294,6 +302,14 @@ export class ClinicalController {
       return { available: false, klOrigin: current.kl_origin, reason: 'Se necesita un estudio anterior de la misma rodilla con una fecha diferente' };
     }
     const birth = this.crypto.decryptText(current.birth_date_cipher, `patient:${current.patient_id}:birth`);
+    if (yearsAt(birth, prior.exam_date) <= 0 || yearsAt(birth, current.exam_date) <= 0) {
+      await this.db.query("DELETE FROM model_predictions WHERE observation_id=$1 AND model_name='LSTM-v2'", [current.observation_id]);
+      return {
+        available: false,
+        klOrigin: current.kl_origin,
+        reason: 'No disponible: una fecha del seguimiento es anterior o igual a la fecha de nacimiento registrada.',
+      };
+    }
     const payload = {
       patient_reference: this.crypto.blindIndex(current.patient_id),
       observations: [

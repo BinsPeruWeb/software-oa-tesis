@@ -86,16 +86,6 @@ export class PatientsService {
 
   async update(id: string, raw: PatientInput, actor: AuthUser) {
     const row = await this.ownedRow(id, actor); const input = this.validate(raw);
-    const earliestStudy = (await this.db.query<{ exam_date: string | null }>(
-      `SELECT min(s.exam_date)::text exam_date FROM clinical_episodes e
-       JOIN radiographic_studies s ON s.episode_id=e.id WHERE e.patient_id=$1`,
-      [row.id],
-    )).rows[0]?.exam_date;
-    if (earliestStudy && input.birthDate >= earliestStudy) {
-      throw new BadRequestException(
-        `La fecha de nacimiento debe ser anterior al primer estudio registrado (${earliestStudy}).`,
-      );
-    }
     try {
       await this.db.transaction(async (client) => {
         await client.query(

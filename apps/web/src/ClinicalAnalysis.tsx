@@ -64,12 +64,6 @@ function StudyUpload({
   const [preflight, setPreflight] = useState<Preflight>();
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
-  const minimumExamDate = (() => {
-    const value = new Date(`${patient.birthDate}T00:00:00Z`);
-    if (Number.isNaN(value.getTime())) return patient.birthDate;
-    value.setUTCDate(value.getUTCDate() + 1);
-    return value.toISOString().slice(0, 10);
-  })();
   const blocked =
     preflight?.reviewStatus === "REJECTED" || preflight?.supported === false;
 
@@ -87,15 +81,7 @@ function StudyUpload({
         body: data,
       });
       setPreflight(result);
-      if (result.examDate) {
-        setExamDate(result.examDate);
-        if (result.examDate < minimumExamDate) {
-          notify(
-            `La fecha detectada (${result.examDate}) es anterior o igual a la fecha de nacimiento. Corríjala antes de continuar.`,
-            "warning",
-          );
-        }
-      }
+      if (result.examDate) setExamDate(result.examDate);
       if (result.fileKind === "DICOM") setLayout("bilateral");
       else if (result.suggestedLayout !== "uncertain")
         setLayout(result.suggestedLayout);
@@ -123,13 +109,6 @@ function StudyUpload({
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!file || !preflight || !layout) return;
-    if (examDate < minimumExamDate) {
-      notify(
-        `La fecha del examen debe ser posterior a la fecha de nacimiento (${patient.birthDate}).`,
-        "error",
-      );
-      return;
-    }
     setBusy(true);
     try {
       const episode = await post<{ id: string }>(
@@ -247,7 +226,6 @@ function StudyUpload({
               Fecha del examen
               <input
                 type="date"
-                min={minimumExamDate}
                 max={new Date().toISOString().slice(0, 10)}
                 value={examDate}
                 onChange={(event) => setExamDate(event.target.value)}

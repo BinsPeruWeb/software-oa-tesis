@@ -327,15 +327,11 @@ export class StudiesController {
     if (!SOURCE_TYPES.includes(sourceType)) throw new BadRequestException('Tipo de entrada inválido');
     if (!['L', 'R'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
     const examDate = isoDate(body.examDate, 'Fecha del examen');
-    const episode = (await this.db.query<{ patient_id: string; birth_date_cipher: Buffer }>(
-      `SELECT e.patient_id,p.birth_date_cipher FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
+    const episode = (await this.db.query<{ patient_id: string }>(
+      `SELECT e.patient_id FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
        WHERE e.id=$1 AND e.status='OPEN' AND p.owner_clinician_id=$2 AND p.archived_at IS NULL`, [episodeId, user.id],
     )).rows[0];
     if (!episode) throw new BadRequestException('Episodio no encontrado o cerrado');
-    const birthDate = this.crypto.decryptText(episode.birth_date_cipher, `patient:${episode.patient_id}:birth`);
-    if (examDate <= birthDate) {
-      throw new BadRequestException('La fecha del examen debe ser posterior a la fecha de nacimiento del paciente.');
-    }
     const profile = (await this.db.query<any>('SELECT * FROM patient_clinical_profiles WHERE patient_id=$1', [episode.patient_id])).rows[0];
     if (!profile) throw new BadRequestException('Complete primero los datos clínicos de la historia del paciente');
     const confirmation = { projection: true, weight: true, orientation: true };

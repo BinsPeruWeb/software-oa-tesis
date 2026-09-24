@@ -76,6 +76,15 @@ def test_recommendations_require_chronological_studies_and_longitudinal_history(
         RecommendationRequest(scope="PATIENT", studies=[later, study])
 
 
+def test_recommendation_accepts_missing_age_for_legacy_inconsistent_dates():
+    request = RecommendationRequest(scope="STUDY", studies=[{
+        "sequence": 1, "months_since_first": 0, "knee_side": "R", "kl_grade": 2,
+        "kl_source": "CLINICIAN", "age_at_exam": None, "pain_score": 5,
+        **BASE_FLAGS,
+    }])
+    assert request.studies[0].age_at_exam is None
+
+
 def test_recommendation_uses_osteoarthritis_and_a_single_recommendation_paragraph():
     content = RecommendationContent(
         headline="Evolución de Artrosis de rodilla",
