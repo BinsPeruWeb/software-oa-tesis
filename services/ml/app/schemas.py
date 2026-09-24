@@ -210,3 +210,5 @@ class RecommendationResponse(StrictModel):
     provider_request_id: str | None = None
     cost_usd: float | None = None
     unavailable_reason: str | None = None
+    error_code: str | None = None
+    error_message: str | None = None

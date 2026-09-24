@@ -328,4 +328,6 @@ async def clinical_recommendation(request: RecommendationRequest):
         "provider_request_id": generated.provider_request_id,
         "cost_usd": generated.cost,
         "unavailable_reason": generated.unavailable_reason,
+        "error_code": generated.error_code,
+        "error_message": generated.error_message,
     }

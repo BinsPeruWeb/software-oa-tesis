@@ -11,6 +11,7 @@ from pydantic import ValidationError
 from app.engine import XGB_FEATURES, build_arthroplasty_features
 from app.imaging import detect_image, extract_bilateral_roi, normalize_pixels, read_dicom, read_raster
 from app.schemas import ArthroplastyRequest, ProgressionRequest, RecommendationContent, RecommendationRequest
+from app.recommendations import _http_failure
 from app.vision import VisionAssessment, classify_review_status
 
 
@@ -93,6 +94,24 @@ def test_recommendation_uses_osteoarthritis_and_a_single_recommendation_paragrap
             recommendation="Control clínico periódico.",
             priority="routine",
         )
+
+
+@pytest.mark.parametrize(
+    ("status", "code", "message_fragment"),
+    [
+        (400, "OPENROUTER_INVALID_REQUEST", "formato"),
+        (401, "OPENROUTER_UNAUTHORIZED", "clave"),
+        (402, "OPENROUTER_INSUFFICIENT_CREDITS", "saldo"),
+        (429, "OPENROUTER_RATE_LIMIT", "solicitudes"),
+        (404, "OPENROUTER_MODEL_UNAVAILABLE", "modelo"),
+        (504, "OPENROUTER_TIMEOUT", "tiempo"),
+        (503, "OPENROUTER_UNAVAILABLE", "disponible"),
+    ],
+)
+def test_openrouter_failures_are_precise(status, code, message_fragment):
+    actual_code, actual_message = _http_failure(status)
+    assert actual_code == code
+    assert message_fragment in actual_message.lower()
 
 
 def test_normalization_rejects_flat_image_and_left_roi_is_mirrored():

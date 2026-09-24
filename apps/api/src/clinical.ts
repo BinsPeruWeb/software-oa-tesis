@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Logger, Param, Patch, Post, Query, Res, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import PDFDocument from 'pdfkit';
 import { createHash, randomUUID } from 'node:crypto';
@@ -24,10 +24,23 @@ const validatePain = (value: unknown) => {
   return boundedNumber(value, 'Dolor', 0, 10);
 };
 const yearsAt = (birth: string, exam: string) => (Date.parse(exam) - Date.parse(birth)) / (365.25 * 86400_000);
+const databaseDate = (value: unknown) => {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value.toISOString().slice(0, 10);
+  const match = String(value ?? '').match(/\d{4}-\d{2}-\d{2}/);
+  return match?.[0] ?? '';
+};
+
+type RecommendationAttempt = {
+  value: any | null;
+  updated: boolean;
+  error: string | null;
+  errorCode: string | null;
+};
 
 @Controller('api')
 @UseGuards(SessionGuard, CsrfGuard, ClinicianGuard)
 export class ClinicalController {
+  private readonly logger = new Logger(ClinicalController.name);
   constructor(
     private readonly db: DatabaseService, private readonly crypto: CryptoService,
     private readonly assets: AssetService, private readonly audit: AuditService,
@@ -183,14 +196,53 @@ export class ClinicalController {
 
   private async mlRisk(path: string, payload: unknown) {
     const started = performance.now();
-    const response = await fetch(`${process.env.ML_SERVICE_URL}${path}`, {
-      method: 'POST', signal: AbortSignal.timeout(30_000),
-      headers: { 'content-type': 'application/json', 'x-service-token': process.env.SERVICE_TOKEN ?? '' },
-      body: JSON.stringify(payload),
-    });
-    const result = await response.json() as any;
-    if (!response.ok) throw new BadRequestException(result?.detail ?? 'Predicción de riesgo no disponible');
+    // OpenRouter puede efectuar un segundo intento de hasta 25 s. La API pública
+    // debe esperar ambos intentos para no cortar una respuesta que sigue en curso.
+    const timeoutMs = path === '/v1/recommendations' ? 65_000 : 30_000;
+    let response: globalThis.Response;
+    try {
+      response = await fetch(`${process.env.ML_SERVICE_URL}${path}`, {
+        method: 'POST', signal: AbortSignal.timeout(timeoutMs),
+        headers: { 'content-type': 'application/json', 'x-service-token': process.env.SERVICE_TOKEN ?? '' },
+        body: JSON.stringify(payload),
+      });
+    } catch (error: any) {
+      const timeout = error?.name === 'TimeoutError' || error?.name === 'AbortError';
+      throw new ServiceUnavailableException(timeout
+        ? 'El servicio de análisis excedió el tiempo de espera. Inténtelo nuevamente.'
+        : 'No fue posible comunicarse con el servicio de análisis.');
+    }
+    let result: any;
+    try {
+      result = await response.json();
+    } catch {
+      throw new ServiceUnavailableException('El servicio de análisis devolvió una respuesta inválida.');
+    }
+    if (!response.ok) {
+      const message = this.mlErrorMessage(result?.detail ?? result?.message, response.status);
+      if (response.status >= 500) throw new ServiceUnavailableException(message);
+      throw new BadRequestException(message);
+    }
     return { result, latencyMs: performance.now() - started };
+  }
+
+  private mlErrorMessage(detail: unknown, status: number) {
+    const entries = Array.isArray(detail) ? detail : [detail];
+    const messages = entries.map((entry: any) => {
+      if (typeof entry === 'string') return entry;
+      const location = Array.isArray(entry?.location ?? entry?.loc) ? (entry.location ?? entry.loc) : [];
+      const field = String(location.at(-1) ?? '');
+      if (['age_at_exam', 'date_of_birth', 'exam_date'].includes(field)) {
+        return 'La fecha del examen y la fecha de nacimiento son incompatibles para el análisis.';
+      }
+      const message = typeof entry?.message === 'string' ? entry.message
+        : typeof entry?.msg === 'string' ? entry.msg
+          : typeof entry?.detail === 'string' ? entry.detail : null;
+      return message ? (field ? `${field}: ${message}` : message) : null;
+    }).filter((message): message is string => Boolean(message));
+    return messages.length
+      ? [...new Set(messages)].join(' ')
+      : `El servicio de análisis rechazó la solicitud (HTTP ${status}).`;
   }
 
   private semanticFlags(row: ContextRow | any) {
@@ -311,26 +363,33 @@ export class ClinicalController {
        WHERE e.patient_id=$1 AND p.owner_clinician_id=$2 AND (cr.decision IS NULL OR cr.decision<>'REJECTED')
        ORDER BY s.exam_date ASC,k.knee_side ASC,k.id ASC`,
       [patientId, userId],
-    )).rows.map((row) => ({
-      observationId: row.observationId,
-      exam_date: String(row.examDate).slice(0, 10),
-      knee_side: row.kneeSide,
-      kl_grade: Number(row.klGrade),
-      confidence: row.confidence == null ? null : Number(row.confidence),
-      pain_score: row.painScore == null ? null : Number(row.painScore),
-      obesity: row.obesity,
-      diabetes: row.diabetes,
-      hypertension: row.hypertension,
-      nicotine_use: row.nicotineUse,
-      trauma_lower_extremity: row.traumaLowerExtremity,
-      arthroplasty_probability: row.arthroplastyProbability == null ? null : Number(row.arthroplastyProbability),
-      progression_probability: row.progressionProbability == null ? null : Number(row.progressionProbability),
-      age_at_exam: Number(yearsAt(
+    )).rows.map((row) => {
+      const examDate = databaseDate(row.examDate);
+      const derivedAge = yearsAt(
         this.crypto.decryptText(row.birthDateCipher, `patient:${patientId}:birth`),
-        String(row.examDate).slice(0, 10),
-      ).toFixed(2)),
-      kl_source: row.confirmedKl == null ? 'MODEL' : 'CLINICIAN',
-    }));
+        examDate,
+      );
+      return {
+        observationId: row.observationId,
+        exam_date: examDate,
+        knee_side: row.kneeSide,
+        kl_grade: Number(row.klGrade),
+        confidence: row.confidence == null ? null : Number(row.confidence),
+        pain_score: row.painScore == null ? null : Number(row.painScore),
+        obesity: row.obesity,
+        diabetes: row.diabetes,
+        hypertension: row.hypertension,
+        nicotine_use: row.nicotineUse,
+        trauma_lower_extremity: row.traumaLowerExtremity,
+        arthroplasty_probability: row.arthroplastyProbability == null ? null : Number(row.arthroplastyProbability),
+        progression_probability: row.progressionProbability == null ? null : Number(row.progressionProbability),
+        // La edad es complementaria para la orientación. Los registros históricos
+        // inconsistentes se omiten en lugar de bloquear el análisis y el PDF.
+        age_at_exam: Number.isFinite(derivedAge) && derivedAge >= 0 && derivedAge <= 130
+          ? Number(derivedAge.toFixed(2)) : null,
+        kl_source: row.confirmedKl == null ? 'MODEL' : 'CLINICIAN',
+      };
+    });
   }
 
   private async storedRecommendation(patientId: string, scope: 'STUDY' | 'PATIENT', observationId?: string) {
@@ -380,19 +439,41 @@ export class ClinicalController {
     studies: any[],
     user: AuthUser,
     observationId?: string,
-  ) {
+  ): Promise<RecommendationAttempt> {
     const firstDate = Date.parse(studies[0].exam_date);
+    if (!Number.isFinite(firstDate)) {
+      return {
+        value: null, updated: false, errorCode: 'INVALID_EXAM_DATE',
+        error: 'No fue posible interpretar la fecha del estudio para generar la orientación clínica.',
+      };
+    }
     const semanticStudies = studies.map(({ observationId: _ignored, exam_date, ...study }, index) => ({
       sequence: index + 1,
       months_since_first: Number(((Date.parse(exam_date) - firstDate) / (365.25 / 12 * 86400_000)).toFixed(2)),
       ...study,
     }));
     const payload = { scope, studies: semanticStudies };
-    const inputHash = createHash('sha256').update(JSON.stringify({ contractVersion: 'recommendation-v3', payload })).digest('hex');
+    const inputHash = createHash('sha256').update(JSON.stringify({ contractVersion: 'recommendation-v4', payload })).digest('hex');
     const existing = await this.storedRecommendation(patientId, scope, observationId);
-    if (existing?.inputHash === inputHash) return existing;
-    const { result } = await this.mlRisk('/v1/recommendations', payload);
-    if (!result.available || !result.content) return existing ?? null;
+    if (existing?.inputHash === inputHash) return { value: existing, updated: false, error: null, errorCode: null };
+    let result: any;
+    try {
+      ({ result } = await this.mlRisk('/v1/recommendations', payload));
+    } catch (error: any) {
+      const message = typeof error?.message === 'string' ? error.message : 'No fue posible generar la interpretación clínica.';
+      this.logger.warn(`Interpretación no generada: scope=${scope} code=ML_REQUEST_FAILED`);
+      return { value: existing, updated: false, error: message, errorCode: 'ML_REQUEST_FAILED' };
+    }
+    if (!result.available || !result.content) {
+      const message = typeof result.error_message === 'string'
+        ? result.error_message
+        : 'OpenRouter no devolvió una interpretación clínica disponible.';
+      this.logger.warn(`Interpretación no generada: scope=${scope} code=${result.error_code ?? result.unavailable_reason ?? 'UNAVAILABLE'}`);
+      return {
+        value: existing, updated: false, error: message,
+        errorCode: result.error_code ?? result.unavailable_reason ?? 'RECOMMENDATION_UNAVAILABLE',
+      };
+    }
     const id = existing?.id ?? randomUUID();
     const cipher = this.crypto.encrypt(JSON.stringify(result.content), `recommendation:${id}:content`);
     if (existing) {
@@ -410,7 +491,12 @@ export class ClinicalController {
       );
     }
     await this.audit.record(user.id, 'CLINICAL_RECOMMENDATION_GENERATED', 'ClinicalRecommendation', id, { scope });
-    return this.storedRecommendation(patientId, scope, observationId);
+    return {
+      value: await this.storedRecommendation(patientId, scope, observationId),
+      updated: true,
+      error: null,
+      errorCode: null,
+    };
   }
 
   @Post('observations/:id/recommendations')
@@ -420,17 +506,25 @@ export class ClinicalController {
     const studies = await this.recommendationStudies(current.patient_id, user.id);
     const currentStudy = studies.find((study) => study.observationId === observationId);
     if (!currentStudy) throw new BadRequestException('El análisis no está disponible para generar orientación');
-    const [individualResult, generalResult] = await Promise.allSettled([
+    const [individualResult, generalResult] = await Promise.all([
       this.generateRecommendation(current.patient_id, 'STUDY', [currentStudy], user, observationId),
       studies.length >= 2
         ? this.generateRecommendation(current.patient_id, 'PATIENT', studies, user)
-        : Promise.resolve(null),
+        : Promise.resolve<RecommendationAttempt>({ value: null, updated: false, error: null, errorCode: null }),
     ]);
-    const individual = individualResult.status === 'fulfilled' ? individualResult.value : null;
-    const general = generalResult.status === 'fulfilled' ? generalResult.value : null;
+    const errors = [
+      individualResult.error ? { scope: 'STUDY', code: individualResult.errorCode, message: individualResult.error } : null,
+      generalResult.error ? { scope: 'PATIENT', code: generalResult.errorCode, message: generalResult.error } : null,
+    ].filter(Boolean);
     return {
-      individual, general, studyCount: studies.length,
-      individualUpdated: Boolean(individual), generalUpdated: studies.length < 2 || Boolean(general),
+      individual: individualResult.value,
+      general: generalResult.value,
+      studyCount: studies.length,
+      individualAvailable: Boolean(individualResult.value),
+      generalAvailable: studies.length < 2 || Boolean(generalResult.value),
+      individualUpdated: individualResult.updated,
+      generalUpdated: generalResult.updated,
+      errors,
     };
   }
 
@@ -669,15 +763,18 @@ export class ClinicalController {
     const episodeRecommendationInput = recommendationInput.find(
       (item) => item.observationId === studies[0].observation_id,
     );
-    const recommendation = reportType === 'LONGITUDINAL' && recommendationInput.length >= 2
+    const recommendationAttempt: RecommendationAttempt = reportType === 'LONGITUDINAL' && recommendationInput.length >= 2
       ? await this.generateRecommendation(patient.patient_id, 'PATIENT', recommendationInput, user)
       : episodeRecommendationInput
         ? await this.generateRecommendation(
           patient.patient_id, 'STUDY', [episodeRecommendationInput], user, episodeRecommendationInput.observationId,
         )
-        : null;
-    if (!recommendation) {
-      throw new BadRequestException('No fue posible generar la interpretación clínica. Inténtelo nuevamente.');
+        : {
+          value: null, updated: false, errorCode: 'RECOMMENDATION_INPUT_UNAVAILABLE',
+          error: 'El análisis no tiene resultados suficientes para generar la interpretación clínica.',
+        };
+    if (!recommendationAttempt.value) {
+      throw new BadRequestException(recommendationAttempt.error ?? 'No fue posible generar la interpretación clínica.');
     }
     const note = reportType === 'LONGITUDINAL'
       ? await this.storedClinicalNote(patient.patient_id, 'PATIENT')
@@ -689,7 +786,7 @@ export class ClinicalController {
       dni: this.crypto.decryptText(patient.dni_cipher, `patient:${patient.patient_id}:dni`),
       birthDate: this.crypto.decryptText(patient.birth_date_cipher, `patient:${patient.patient_id}:birth`),
       sex: patient.sex_cipher ? this.crypto.decryptText(patient.sex_cipher, `patient:${patient.patient_id}:sex`) : null,
-      clinician: user.displayName, studies, history, recommendation, note,
+      clinician: user.displayName, studies, history, recommendation: recommendationAttempt.value, note,
     };
     const pdf = await this.makePdf(context);
     const stored = await this.assets.write(pdf);
@@ -703,7 +800,10 @@ export class ClinicalController {
       [episodeId, asset.rows[0].id, user.id, reportType],
     );
     await this.audit.record(user.id, 'DRAFT_REPORT_GENERATED', 'DraftReport', report.rows[0].id, { reportType });
-    return { id: report.rows[0].id, status: 'DRAFT', reportType };
+    return {
+      id: report.rows[0].id, status: 'DRAFT', reportType,
+      warning: recommendationAttempt.error,
+    };
   }
 
   private makePdf(context: any): Promise<Buffer> {

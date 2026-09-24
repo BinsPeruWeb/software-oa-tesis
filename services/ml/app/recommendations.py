@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from dataclasses import dataclass
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -11,6 +13,8 @@ from pydantic import ValidationError
 from .config import Settings
 from .schemas import RecommendationContent, RecommendationRequest
 
+
+logger = logging.getLogger("oa.ml.recommendations")
 
 SCHEMA = {
     "type": "object",
@@ -65,12 +69,37 @@ class GeneratedRecommendation:
     provider_request_id: str | None
     cost: float | None
     unavailable_reason: str | None
+    error_code: str | None
+    error_message: str | None
+
+
+def _http_failure(status: int) -> tuple[str, str]:
+    if status == 400:
+        return "OPENROUTER_INVALID_REQUEST", "OpenRouter rechazó el formato de la solicitud de interpretación."
+    if status == 401:
+        return "OPENROUTER_UNAUTHORIZED", "OpenRouter rechazó la clave configurada."
+    if status == 402:
+        return "OPENROUTER_INSUFFICIENT_CREDITS", "OpenRouter no tiene saldo suficiente para generar la interpretación."
+    if status == 403:
+        return "OPENROUTER_FORBIDDEN", "OpenRouter no autorizó el modelo configurado para esta clave."
+    if status == 404:
+        return "OPENROUTER_MODEL_UNAVAILABLE", "El modelo de interpretación configurado no está disponible en OpenRouter."
+    if status == 429:
+        return "OPENROUTER_RATE_LIMIT", "OpenRouter limitó temporalmente las solicitudes. Inténtelo nuevamente en unos segundos."
+    if status in {408, 504}:
+        return "OPENROUTER_TIMEOUT", "OpenRouter excedió el tiempo disponible para responder."
+    if status >= 500:
+        return "OPENROUTER_UNAVAILABLE", "OpenRouter no está disponible temporalmente."
+    return "OPENROUTER_REQUEST_REJECTED", f"OpenRouter rechazó la solicitud de interpretación (HTTP {status})."
 
 
 def _request(settings: Settings, request_data: RecommendationRequest) -> GeneratedRecommendation:
     model = settings.openrouter_recommendation_model
     if not settings.openrouter_enabled:
-        return GeneratedRecommendation(None, model, None, None, "DISABLED")
+        return GeneratedRecommendation(
+            None, model, None, None, "DISABLED", "OPENROUTER_DISABLED",
+            "La generación de interpretaciones con OpenRouter está desactivada.",
+        )
     payload = {
         "model": model,
         "messages": [
@@ -89,7 +118,10 @@ def _request(settings: Settings, request_data: RecommendationRequest) -> Generat
             "name": "oa_clinical_recommendation", "strict": True, "schema": SCHEMA,
         }},
     }
-    for _attempt in range(2):
+    last_code = "OPENROUTER_UNAVAILABLE"
+    last_message = "No fue posible obtener una interpretación clínica de OpenRouter."
+    last_request_id = None
+    for attempt in range(2):
         outbound = Request(
             settings.openrouter_base_url.rstrip("/") + "/chat/completions",
             data=json.dumps(payload).encode("utf-8"), method="POST",
@@ -112,11 +144,37 @@ def _request(settings: Settings, request_data: RecommendationRequest) -> Generat
             cost = result.get("usage", {}).get("cost")
             return GeneratedRecommendation(
                 content, str(result.get("model") or model), result.get("id"),
-                float(cost) if cost is not None else None, None,
+                float(cost) if cost is not None else None, None, None, None,
             )
-        except (HTTPError, URLError, TimeoutError, KeyError, IndexError, json.JSONDecodeError, ValidationError, ValueError):
-            continue
-    return GeneratedRecommendation(None, model, None, None, "PROVIDER_UNAVAILABLE")
+        except HTTPError as exc:
+            last_code, last_message = _http_failure(exc.code)
+            last_request_id = exc.headers.get("x-request-id") or exc.headers.get("x-openrouter-request-id")
+            logger.warning("OpenRouter rechazó la interpretación: status=%s attempt=%s", exc.code, attempt + 1)
+            if exc.code in {400, 401, 402, 403, 404}:
+                break
+            if attempt == 0:
+                time.sleep(1.5)
+        except TimeoutError:
+            last_code = "OPENROUTER_TIMEOUT"
+            last_message = "OpenRouter excedió el tiempo disponible para responder."
+            logger.warning("Timeout al solicitar interpretación a OpenRouter: attempt=%s", attempt + 1)
+            if attempt == 0:
+                time.sleep(1.5)
+        except URLError:
+            last_code = "OPENROUTER_NETWORK_ERROR"
+            last_message = "No fue posible conectarse con OpenRouter desde el servidor."
+            logger.warning("Error de red al solicitar interpretación a OpenRouter: attempt=%s", attempt + 1)
+            if attempt == 0:
+                time.sleep(1.5)
+        except (KeyError, IndexError, json.JSONDecodeError, ValidationError, ValueError):
+            last_code = "OPENROUTER_INVALID_RESPONSE"
+            last_message = "OpenRouter respondió, pero la interpretación no cumplió el formato clínico esperado."
+            logger.warning("Respuesta inválida de OpenRouter para interpretación: attempt=%s", attempt + 1)
+            if attempt == 0:
+                time.sleep(1.5)
+    return GeneratedRecommendation(
+        None, model, last_request_id, None, "PROVIDER_UNAVAILABLE", last_code, last_message,
+    )
 
 
 async def generate_recommendation(settings: Settings, request_data: RecommendationRequest) -> GeneratedRecommendation:

@@ -63,6 +63,41 @@ describe('Clinical report PDF', () => {
 });
 
 describe('Clinical recommendation compatibility', () => {
+  it('turns structured ML validation details into a readable error', () => {
+    const controller = new ClinicalController(undefined as never, undefined as never, undefined as never, undefined as never);
+    const message = (controller as any).mlErrorMessage([
+      {
+        location: ['body', 'studies', 0, 'age_at_exam'],
+        message: 'Input should be greater than or equal to 0',
+        type: 'greater_than_equal',
+      },
+    ], 422);
+
+    expect(message).toBe('La fecha del examen y la fecha de nacimiento son incompatibles para el análisis.');
+    expect(message).not.toContain('[object Object]');
+  });
+
+  it('normalizes database dates and omits an impossible optional age for IA', async () => {
+    const db = {
+      query: jest.fn(async () => ({ rows: [{
+        observationId: 'observation-id',
+        examDate: new Date('2026-06-16T00:00:00.000Z'),
+        kneeSide: 'R', klGrade: 2, confirmedKl: 2,
+        birthDateCipher: Buffer.from('encrypted'), confidence: 0.8,
+        painScore: 4, obesity: false, diabetes: false, hypertension: false,
+        nicotineUse: false, traumaLowerExtremity: false,
+        arthroplastyProbability: 0.1, progressionProbability: null,
+      }] })),
+    };
+    const crypto = { decryptText: jest.fn(() => '2026-09-15') };
+    const controller = new ClinicalController(db as never, crypto as never, undefined as never, undefined as never);
+
+    const studies = await (controller as any).recommendationStudies('patient-id', 'doctor-id');
+
+    expect(studies[0].exam_date).toBe('2026-06-16');
+    expect(studies[0].age_at_exam).toBeNull();
+  });
+
   it('converts legacy action lists into the current recommendation paragraph', () => {
     const controller = new ClinicalController(undefined as never, undefined as never, undefined as never, undefined as never);
     const content = (controller as any).normalizeRecommendationContent({

@@ -81,6 +81,17 @@ type ClinicalRecommendation = {
   generatedAt: string;
   providerModel: string;
 };
+type RecommendationGeneration = {
+  individual: ClinicalRecommendation | null;
+  general: ClinicalRecommendation | null;
+  individualAvailable: boolean;
+  generalAvailable: boolean;
+  individualUpdated: boolean;
+  generalUpdated: boolean;
+  errors?: Array<{ scope: "STUDY" | "PATIENT"; code?: string | null; message: string }>;
+};
+const recommendationError = (value: RecommendationGeneration | null | undefined) =>
+  value?.errors?.map((item) => item.message).filter(Boolean).join(" · ") ?? "";
 type AdminUser = {
   id: string;
   email: string;
@@ -1853,7 +1864,7 @@ function PatientDetail({
         const latest = [...a.value].sort((left, right) =>
           String(right.examDate).localeCompare(String(left.examDate)) || right.observationId.localeCompare(left.observationId)
         )[0];
-        void post<any>(`/api/observations/${latest.observationId}/recommendations`, {})
+        void post<RecommendationGeneration>(`/api/observations/${latest.observationId}/recommendations`, {})
           .then((generated) => {
             if (generated.general?.content) setRecommendation(generated.general);
             else if (a.value.length === 1 && generated.individual?.content) setRecommendation(generated.individual);
@@ -1864,8 +1875,10 @@ function PatientDetail({
                   : item
               ));
             }
+            const issue = recommendationError(generated);
+            if (issue) notify(`La orientación clínica no pudo actualizarse completamente: ${issue}`, "warning");
           })
-          .catch(() => undefined);
+          .catch((error: any) => notify(`No se pudo actualizar la orientación clínica: ${error.message}`, "warning"));
       }
     } catch (error: any) {
       notify(error.message, "error");
@@ -2167,7 +2180,15 @@ function EpisodeAnalysis({
       const current = loaded.studies?.find((study: AnalysisSummary) => study.status === "COMPLETED");
       if (!loaded.archived && current && !recommendationRecovery.current.has(current.observationId)) {
         recommendationRecovery.current.add(current.observationId);
-        await post(`/api/observations/${current.observationId}/recommendations`, {}).catch(() => undefined);
+        try {
+          const generated = await post<RecommendationGeneration>(
+            `/api/observations/${current.observationId}/recommendations`, {},
+          );
+          const issue = recommendationError(generated);
+          if (issue) notify(`No se pudo actualizar completamente la interpretación: ${issue}`, "warning");
+        } catch (error: any) {
+          notify(`No se pudo actualizar la interpretación: ${error.message}`, "warning");
+        }
         setData(await api(`/api/episodes/${episodeId}/analysis`));
       }
     } catch (error: any) {
@@ -2202,7 +2223,12 @@ function EpisodeAnalysis({
       link.click();
       link.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      notify("PDF generado y descargado", "success");
+      notify(
+        value.warning
+          ? `PDF descargado con la interpretación previamente guardada. No pudo actualizarse: ${value.warning}`
+          : "PDF generado y descargado",
+        value.warning ? "warning" : "success",
+      );
     } catch (error: any) {
       notify(error.message, "error");
     } finally {
@@ -2215,6 +2241,7 @@ function EpisodeAnalysis({
     setReviewBusy(true);
     setReviewStage("Guardando la revisión del grado KL…");
     let recommendationUpdated = true;
+    let recommendationIssue = "";
     try {
       const observationId = data.studies.find(
         (study: AnalysisSummary) => study.ensemble?.id === reviewing.id,
@@ -2234,9 +2261,14 @@ function EpisodeAnalysis({
         ]);
         setReviewStage("Actualizando la interpretación y recomendación…");
         try {
-          await post(`/api/observations/${observationId}/recommendations`, {});
-        } catch {
+          const generated = await post<RecommendationGeneration>(
+            `/api/observations/${observationId}/recommendations`, {},
+          );
+          recommendationIssue = recommendationError(generated);
+          recommendationUpdated = Boolean(generated.individualAvailable) && !recommendationIssue;
+        } catch (error: any) {
           recommendationUpdated = false;
+          recommendationIssue = error?.message ?? "No fue posible actualizar la interpretación con IA.";
         }
       }
       setReviewStage("Actualizando los resultados en pantalla…");
@@ -2244,7 +2276,7 @@ function EpisodeAnalysis({
       notify(
         recommendationUpdated
           ? "Revisión, riesgos e interpretación actualizados"
-          : "KL y riesgos guardados; la interpretación de IA no pudo actualizarse",
+          : `KL y riesgos guardados; la interpretación de IA no pudo actualizarse: ${recommendationIssue || "OpenRouter no devolvió un resultado"}`,
         recommendationUpdated ? "success" : "warning",
       );
       setReviewing(undefined);

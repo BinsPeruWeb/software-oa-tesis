@@ -64,6 +64,12 @@ function StudyUpload({
   const [preflight, setPreflight] = useState<Preflight>();
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const minimumExamDate = (() => {
+    const value = new Date(`${patient.birthDate}T00:00:00Z`);
+    if (Number.isNaN(value.getTime())) return patient.birthDate;
+    value.setUTCDate(value.getUTCDate() + 1);
+    return value.toISOString().slice(0, 10);
+  })();
   const blocked =
     preflight?.reviewStatus === "REJECTED" || preflight?.supported === false;
 
@@ -81,7 +87,15 @@ function StudyUpload({
         body: data,
       });
       setPreflight(result);
-      if (result.examDate) setExamDate(result.examDate);
+      if (result.examDate) {
+        setExamDate(result.examDate);
+        if (result.examDate < minimumExamDate) {
+          notify(
+            `La fecha detectada (${result.examDate}) es anterior o igual a la fecha de nacimiento. Corríjala antes de continuar.`,
+            "warning",
+          );
+        }
+      }
       if (result.fileKind === "DICOM") setLayout("bilateral");
       else if (result.suggestedLayout !== "uncertain")
         setLayout(result.suggestedLayout);
@@ -109,6 +123,13 @@ function StudyUpload({
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (!file || !preflight || !layout) return;
+    if (examDate < minimumExamDate) {
+      notify(
+        `La fecha del examen debe ser posterior a la fecha de nacimiento (${patient.birthDate}).`,
+        "error",
+      );
+      return;
+    }
     setBusy(true);
     try {
       const episode = await post<{ id: string }>(
@@ -226,6 +247,7 @@ function StudyUpload({
               Fecha del examen
               <input
                 type="date"
+                min={minimumExamDate}
                 max={new Date().toISOString().slice(0, 10)}
                 value={examDate}
                 onChange={(event) => setExamDate(event.target.value)}
@@ -446,17 +468,31 @@ function AutomaticWorkflow({
                 },
         });
         setStage("Preparando orientación clínica…");
+        let recommendationWarning = "";
         try {
           const generated = await post<any>(
             `/api/observations/${ids.observationId}/recommendations`,
             {},
           );
-          if (!cancelled) setRecommendation(generated.individual);
-        } catch {
-          // La orientación externa es complementaria y no debe invalidar el análisis local.
+          if (!cancelled) {
+            setRecommendation(generated.individual);
+            recommendationWarning = Array.isArray(generated.errors)
+              ? generated.errors.map((item: any) => item?.message).filter(Boolean).join(" · ")
+              : "";
+            if (!generated.individual && !recommendationWarning) {
+              recommendationWarning = "OpenRouter no devolvió una interpretación para este análisis.";
+            }
+          }
+        } catch (reason: any) {
+          recommendationWarning = reason?.message ?? "No fue posible generar la interpretación con IA.";
         }
-        setStage("Análisis completo");
-        notify("Análisis y riesgos registrados automáticamente", "success");
+        setStage(recommendationWarning ? "Análisis completo con una observación" : "Análisis completo");
+        notify(
+          recommendationWarning
+            ? `El análisis y los riesgos se guardaron, pero la IA informó: ${recommendationWarning}`
+            : "Análisis, riesgos e interpretación registrados automáticamente",
+          recommendationWarning ? "warning" : "success",
+        );
       } catch (reason: any) {
         if (!cancelled) {
           setError(reason.message);
@@ -609,7 +645,7 @@ function AutomaticWorkflow({
           <div className="report-actions">
             <button
               className="button primary"
-              disabled={stage !== "Análisis completo"}
+              disabled={!prediction || Boolean(error)}
               onClick={() => openAnalysis(ids.episodeId)}
             >
               Ver análisis completo
