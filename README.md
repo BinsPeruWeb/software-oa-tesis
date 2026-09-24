@@ -36,7 +36,7 @@ Una vez publicada la imagen, se inicia con un único comando:
 ```bash
 docker run -d --name software-oa -p 3000:3000 \
   -v software-oa-data:/data --restart unless-stopped \
-  diegovj24/software-oa-presentacion:1.0.1
+  diegovj24/software-oa-presentacion:1.0.2
 ```
 
 En PowerShell puede escribirse en una sola línea. Después se abre
@@ -56,8 +56,8 @@ el `.env` y los modelos locales:
 
 ```bash
 docker build -f Dockerfile.presentation \
-  -t diegovj24/software-oa-presentacion:1.0.1 .
-docker push diegovj24/software-oa-presentacion:1.0.1
+  -t diegovj24/software-oa-presentacion:1.0.2 .
+docker push diegovj24/software-oa-presentacion:1.0.2
 ```
 
 Esta variante incluye deliberadamente la configuración privada dentro de la
@@ -232,8 +232,11 @@ quedan en modo de solo lectura y no admiten nuevos estudios ni modificaciones.
 - `RASTER_BILATERAL`: radiografía bilateral PNG o JPG.
 - `RASTER_SINGLE_ROI`: PNG o JPG ya recortado a una rodilla.
 
-El DICOM puede aportar la fecha del estudio, pero la identidad del paciente se
-toma siempre de su ficha. PNG y JPG no requieren campos clínicos adicionales.
+La fecha del estudio se registra siempre en el formulario y no se reemplaza con
+la fecha incluida en los metadatos DICOM. Esa fecha registrada y la fecha de
+nacimiento de la ficha determinan `age_at_exam` para XGBoost y LSTM. La
+identidad del paciente se toma siempre de su ficha. PNG y JPG no requieren
+campos clínicos adicionales.
 La revisión visual opcional mediante OpenRouter recibe una miniatura sin
 metadatos y bloquea archivos que no correspondan a una radiografía de rodilla.
 Las orientaciones reciben únicamente grados, probabilidades, indicadores

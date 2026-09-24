@@ -31,6 +31,7 @@ def test_xgboost_has_exact_feature_order_and_first_exam_semantics():
     )
     features = build_arthroplasty_features(request)
     assert list(features) == XGB_FEATURES
+    assert features["age_at_exam"] == pytest.approx(66, abs=0.01)
     assert features["n_prior_exams"] == 0
     assert np.isnan(features["prior_KLG"])
     assert features["pain_missing"] == 1

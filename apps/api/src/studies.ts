@@ -283,7 +283,6 @@ export class StudiesController {
       preflightId: inserted.rows[0].id,
       fileKind: result.file_kind,
       mediaType: result.media_type,
-      examDate: result.exam_date,
       previewDataUrl: `data:image/png;base64,${result.preview_base64_png}`,
       reviewStatus: result.review_status,
       suggestedLayout: result.suggested_layout,

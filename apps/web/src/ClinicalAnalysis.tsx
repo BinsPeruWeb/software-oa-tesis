@@ -20,7 +20,6 @@ type Prediction = {
 type Preflight = {
   preflightId: string;
   fileKind: "DICOM" | "RASTER";
-  examDate: string | null;
   previewDataUrl: string;
   reviewStatus: "ACCEPTED" | "REJECTED" | "REVIEW_REQUIRED" | "UNAVAILABLE";
   suggestedLayout: "bilateral" | "single" | "uncertain";
@@ -81,7 +80,6 @@ function StudyUpload({
         body: data,
       });
       setPreflight(result);
-      if (result.examDate) setExamDate(result.examDate);
       if (result.fileKind === "DICOM") setLayout("bilateral");
       else if (result.suggestedLayout !== "uncertain")
         setLayout(result.suggestedLayout);
@@ -223,7 +221,7 @@ function StudyUpload({
         {preflight && !blocked && (
           <>
             <label>
-              Fecha del examen
+              Fecha registrada para el estudio
               <input
                 type="date"
                 max={new Date().toISOString().slice(0, 10)}
@@ -231,6 +229,10 @@ function StudyUpload({
                 onChange={(event) => setExamDate(event.target.value)}
                 required
               />
+              <small>
+                Esta fecha se usará para calcular la edad del paciente y no
+                se reemplazará con metadatos de la imagen o del DICOM.
+              </small>
             </label>
             <fieldset>
               <legend>Contenido detectado</legend>
