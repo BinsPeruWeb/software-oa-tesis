@@ -131,3 +131,92 @@ describe('Clinical chronology', () => {
     expect(values.get('current')).toEqual({ available: true });
   });
 });
+
+describe('Bilateral episode navigation', () => {
+  it('loads the sibling only within the owned patient and bilateral group', async () => {
+    const episodeId = '11111111-1111-4111-8111-111111111111';
+    const db = { query: jest.fn(async (sql: string) => {
+      if (sql.includes('SELECT e.id "episodeId"') && !sql.includes('radiographic_studies')) {
+        return { rows: [{ episodeId, patientId: 'patient', bilateralGroupId: 'group' }] };
+      }
+      if (sql.includes('radiographic_studies')) return { rows: [{ episodeId, kneeSide: 'R' }, { episodeId: 'sibling', kneeSide: 'L' }] };
+      return { rows: [] };
+    }) };
+    const controller = new ClinicalController(db as never, undefined as never, undefined as never, undefined as never);
+    (controller as any).studySummary = jest.fn(async (value: unknown) => value);
+    const result = await controller.episodeAnalysis(episodeId, { id: 'doctor' } as never);
+    expect(result.studies).toHaveLength(2);
+    const calls = db.query.mock.calls as unknown as Array<[string, unknown[]]>;
+    expect(calls[0][1]).toEqual([episodeId, 'doctor']);
+    expect(calls[1][0]).toContain('e.patient_id=$2');
+    expect(calls[1][1]).toEqual([episodeId, 'patient', 'group']);
+  });
+
+  it('rejects access when the episode is not owned by the clinician', async () => {
+    const db = { query: jest.fn(async () => ({ rows: [] })) };
+    const controller = new ClinicalController(db as never, undefined as never, undefined as never, undefined as never);
+    await expect(controller.episodeAnalysis('11111111-1111-4111-8111-111111111111', { id: 'other-doctor' } as never))
+      .rejects.toThrow('Episodio no encontrado');
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Bilateral report selection', () => {
+  it.each(['R', 'L', 'ALL'])('filters analysis pages by %s while retaining the full patient interpretation', async (side) => {
+    const episodeId = '11111111-1111-4111-8111-111111111111';
+    const allStudies = [{ id: 'right', knee_side: 'R', observation_id: 'right-observation' }, { id: 'left', knee_side: 'L', observation_id: 'left-observation' }];
+    const db = { query: jest.fn(async (sql: string, values?: unknown[]) => {
+      if (sql.includes('SELECT e.patient_id,e.opened_at')) return { rows: [{ patient_id: 'patient' }] };
+      if (sql.includes('SELECT s.id,s.exam_date')) return { rows: allStudies.filter((study) => !values?.[3] || study.knee_side === values[3]) };
+      if (sql.includes('INSERT INTO')) return { rows: [{ id: 'report-asset' }] };
+      return { rows: [] };
+    }) };
+    const assets = { write: jest.fn(async () => ({ storageKey: 'pdf' })) };
+    const crypto = { decryptText: jest.fn(() => 'test') };
+    const controller = new ClinicalController(db as never, crypto as never, assets as never, { record: jest.fn(async () => undefined) } as never);
+    (controller as any).renderRadiograph = jest.fn(async () => null);
+    (controller as any).storedClinicalNote = jest.fn(async () => null);
+    const semanticStudies = [{ observationId: 'right-observation', knee_side: 'R' }, { observationId: 'left-observation', knee_side: 'L' }];
+    (controller as any).recommendationStudies = jest.fn(async () => semanticStudies);
+    const generate = jest.fn(async () => ({ value: { scope: 'PATIENT', content: {} }, error: null }));
+    (controller as any).generateRecommendation = generate;
+    const pdf = jest.fn(async (_context: unknown) => Buffer.from('%PDF-test'));
+    (controller as any).makePdf = pdf;
+    await controller.report(episodeId, { reportType: 'LONGITUDINAL', kneeSide: side }, { id: 'doctor' } as never);
+    const context = pdf.mock.calls[0][0] as any;
+    expect(context.studies.map((study: any) => study.knee_side)).toEqual(side === 'ALL' ? ['R', 'L'] : [side]);
+    expect(generate.mock.calls[0]).toEqual(['patient', 'PATIENT', semanticStudies, { id: 'doctor' }]);
+    const calls = db.query.mock.calls as unknown as Array<[string, unknown[]]>;
+    const studyQuery = calls.find(([sql]) => sql.includes('SELECT s.id,s.exam_date'))!;
+    expect(studyQuery[0]).toContain('k.knee_side=$4');
+    expect(studyQuery[0]).toContain('ORDER BY s.exam_date');
+    expect(studyQuery[1][3]).toBe(side === 'ALL' ? null : side);
+  });
+});
+
+describe('Concurrent bilateral recommendations', () => {
+  it('serializes patient updates and reads the latest results after the earlier update', async () => {
+    const controller = new ClinicalController(undefined as never, undefined as never, undefined as never, undefined as never);
+    const right = '11111111-1111-4111-8111-111111111111';
+    const left = '22222222-2222-4222-8222-222222222222';
+    (controller as any).currentContext = jest.fn(async () => ({ patient_id: 'patient' }));
+    let active = 0;
+    let maxActive = 0;
+    let reads = 0;
+    (controller as any).recommendationStudies = jest.fn(async () => {
+      reads += 1;
+      return [{ observationId: right }, { observationId: left }, ...(reads > 1 ? [{ observationId: 'new-result' }] : [])];
+    });
+    const generalSizes: number[] = [];
+    (controller as any).generateRecommendation = jest.fn(async (_patient: string, scope: string, studies: unknown[]) => {
+      if (scope === 'PATIENT') { active += 1; maxActive = Math.max(maxActive, active); generalSizes.push(studies.length); }
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      if (scope === 'PATIENT') active -= 1;
+      return { value: {}, updated: true, error: null };
+    });
+    await Promise.all([controller.recommendations(right, { id: 'doctor' } as never), controller.recommendations(left, { id: 'doctor' } as never)]);
+    expect(maxActive).toBe(1);
+    expect(generalSizes).toEqual([2, 3]);
+    expect((controller as any).recommendationQueue.size).toBe(0);
+  });
+});

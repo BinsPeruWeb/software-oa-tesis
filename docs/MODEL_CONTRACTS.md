@@ -8,6 +8,10 @@ Entradas: `DICOM_BILATERAL`, `RASTER_BILATERAL` y `RASTER_SINGLE_ROI`. El flujo 
 
 El ensemble es siempre el promedio 50/50 de ResNet50 y DenseNet121. Se conservan las cinco probabilidades de cada miembro, las cinco del ensemble, confianza, KL, hashes, pipeline, dispositivo y latencia. Grad-CAM se genera por backbone; no se representa como explicación causal.
 
+Una entrada bilateral puede evaluar derecha, izquierda o ambas. `BOTH` es una selección de la aplicación, nunca una lateralidad enviada a los modelos. Una carga de ambas crea dos episodios y dos estudios independientes, vinculados por `clinical_episodes.bilateral_group_id`. Comparten un único archivo cifrado; cada observación recibe exclusivamente `L` o `R`, su ROI, trabajo de inferencia, predicciones, revisión, interpretación y nota. Las entradas `RASTER_SINGLE_ROI` no permiten `BOTH`.
+
+El PDF de episodio corresponde solo a la rodilla seleccionada. El longitudinal admite todas las rodillas o solo un lado; incluye una página de análisis por estudio y una sección final con la interpretación y nota general del paciente. Esa interpretación integra todos los análisis incluso cuando las páginas radiográficas se filtran por lateralidad. La síntesis clínica compara cada rodilla con su propio historial, sin tratar la diferencia entre lados como progresión temporal.
+
 ## XGBoost
 
 Orden exacto:

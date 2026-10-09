@@ -582,9 +582,12 @@ TABLA: clinical_episodes
 Tipo: detalle de patients y maestro de estudios y reportes.
 Qué contiene:
   Paciente, fecha de apertura, estado del episodio, creador y fecha de registro.
+  bilateral_group_id vincula los dos episodios de una misma carga bilateral.
 Para qué se usa:
   Para agrupar las radiografías, resultados y reportes que pertenecen a una
   misma evaluación clínica.
+  Cuando se evalúan ambas rodillas se crea un episodio por lado. El vínculo
+  permite consultar ambos mediante pestañas, manteniendo sus resultados separados.
 
 
 TABLA: stored_assets
@@ -683,7 +686,8 @@ TABLA: draft_reports
 Tipo: detalle de clinical_episodes.
 Qué contiene:
   Episodio, archivo PDF cifrado, estado, tipo de reporte, usuario generador y
-  fecha.
+  fecha. knee_side identifica si contiene estudios derechos o izquierdos;
+  cuando no tiene valor corresponde a un reporte general.
 Para qué se usa:
   Para conservar las distintas versiones de reportes por episodio o
   longitudinales y permitir su descarga autenticada.

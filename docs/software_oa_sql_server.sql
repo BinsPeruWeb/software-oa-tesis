@@ -187,6 +187,7 @@ BEGIN TRY
             CONSTRAINT DF_clinical_episodes_id DEFAULT NEWSEQUENTIALID(),
         [patient_id] UNIQUEIDENTIFIER NOT NULL,
         [opened_at] DATE NOT NULL,
+        [bilateral_group_id] UNIQUEIDENTIFIER NULL,
         [status] NVARCHAR(10) NOT NULL
             CONSTRAINT DF_clinical_episodes_status DEFAULT N'OPEN',
         [created_by] UNIQUEIDENTIFIER NOT NULL,
@@ -550,11 +551,13 @@ BEGIN TRY
             CONSTRAINT DF_draft_reports_status DEFAULT N'DRAFT',
         [report_type] NVARCHAR(20) NOT NULL
             CONSTRAINT DF_draft_reports_type DEFAULT N'EPISODE',
+        [knee_side] NCHAR(1) NULL,
         [generated_by] UNIQUEIDENTIFIER NOT NULL,
         [generated_at] DATETIMEOFFSET(7) NOT NULL
             CONSTRAINT DF_draft_reports_generated_at DEFAULT SYSDATETIMEOFFSET(),
         CONSTRAINT PK_draft_reports PRIMARY KEY ([id]),
         CONSTRAINT CK_draft_reports_status CHECK ([status] = N'DRAFT'),
+        CONSTRAINT CK_draft_reports_knee_side CHECK ([knee_side] IN (N'L', N'R')),
         CONSTRAINT CK_draft_reports_type CHECK (
             [report_type] IN (N'EPISODE', N'LONGITUDINAL')
         ),

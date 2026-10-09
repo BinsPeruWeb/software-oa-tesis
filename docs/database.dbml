@@ -169,6 +169,7 @@ Table clinical_episodes {
   id uuid [pk, default: `gen_random_uuid()`]
   patient_id uuid [not null]
   opened_at date [not null]
+  bilateral_group_id uuid [note: 'Vincula dos episodios creados en una carga bilateral; NULL para análisis individuales.']
   status episode_status [not null, default: 'OPEN']
   created_by uuid [not null]
   created_at timestamptz [not null, default: `now()`]
@@ -340,6 +341,7 @@ Table draft_reports {
   asset_id uuid [not null]
   status text [not null, default: 'DRAFT', note: 'Valor fijo DRAFT.']
   report_type report_type [not null, default: 'EPISODE']
+  knee_side knee_side [note: 'Rodilla incluida en las páginas de análisis. NULL identifica un reporte general.']
   generated_by uuid [not null]
   generated_at timestamptz [not null, default: `now()`]
 }

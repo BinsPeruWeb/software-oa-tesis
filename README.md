@@ -232,6 +232,19 @@ quedan en modo de solo lectura y no admiten nuevos estudios ni modificaciones.
 - `RASTER_BILATERAL`: radiografía bilateral PNG o JPG.
 - `RASTER_SINGLE_ROI`: PNG o JPG ya recortado a una rodilla.
 
+En imágenes bilaterales se puede seleccionar **Derecha**, **Izquierda** o **Ambas**.
+La opción Ambas registra dos episodios vinculados, con resultados, interpretación,
+revisión y notas propios de cada rodilla. El detalle permite cambiar de lado mediante
+pestañas y el seguimiento visual organiza un carrusel por rodilla. Los antecedentes
+y la progresión LSTM se mantienen separados por lateralidad.
+
+El PDF del episodio descarga solo la rodilla seleccionada. Desde el detalle, el PDF
+longitudinal también se limita a ese lado. En Seguimiento visual, **Generar Reporte**
+permite elegir General, Rodilla Derecha o Rodilla Izquierda cuando existen estudios
+de ambos lados; con un solo lado descarga directamente. Cada estudio ocupa una
+página de análisis y la interpretación y nota general del paciente aparecen al final,
+incluyendo la síntesis de todos los análisis aun en un longitudinal filtrado.
+
 La fecha del estudio se registra siempre en el formulario y no se reemplaza con
 la fecha incluida en los metadatos DICOM. Esa fecha registrada y la fecha de
 nacimiento de la ficha determinan `age_at_exam` para XGBoost y LSTM. La
