@@ -16,6 +16,20 @@ export enum KneeSide {
   RIGHT = "R",
 }
 
+// BOTH is a selection at upload time, never a model-input lateralidad.
+export type KneeSelection = KneeSide | "BOTH";
+export interface StudyAnalysisJob {
+  episodeId: string;
+  studyId: string;
+  observationId: string;
+  jobId: string;
+  kneeSide: KneeSide;
+}
+export interface StudyUploadResult extends StudyAnalysisJob {
+  bilateralGroupId: string | null;
+  analyses: StudyAnalysisJob[];
+}
+
 export enum ReviewDecision {
   CONFIRMED = "CONFIRMED",
   CORRECTED = "CORRECTED",

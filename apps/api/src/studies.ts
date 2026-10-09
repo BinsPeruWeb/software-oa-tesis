@@ -324,7 +324,11 @@ export class StudiesController {
       ? 'DICOM_BILATERAL'
       : body.imageLayout === 'bilateral' ? 'RASTER_BILATERAL' : 'RASTER_SINGLE_ROI';
     if (!SOURCE_TYPES.includes(sourceType)) throw new BadRequestException('Tipo de entrada inválido');
-    if (!['L', 'R'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
+    if (!['L', 'R', 'BOTH'].includes(body.kneeSide)) throw new BadRequestException('Lateralidad inválida');
+    if (body.kneeSide === 'BOTH' && body.imageLayout !== 'bilateral') {
+      throw new BadRequestException('Para analizar ambas rodillas se necesita una radiografía bilateral');
+    }
+    const sides: Array<'R' | 'L'> = body.kneeSide === 'BOTH' ? ['R', 'L'] : [body.kneeSide as 'R' | 'L'];
     const examDate = isoDate(body.examDate, 'Fecha del examen');
     const episode = (await this.db.query<{ patient_id: string }>(
       `SELECT e.patient_id FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
@@ -342,33 +346,54 @@ export class StudiesController {
         [episode.patient_id, stored.storageKey, preflight.media_type, this.crypto.encrypt(originalName, `asset:${stored.storageKey}:name`),
           createHash('sha256').update(image.buffer).digest('hex'), image.buffer.length, user.id],
       );
-      const study = await client.query<{ id: string }>(
-        `INSERT INTO radiographic_studies(episode_id,asset_id,exam_date,source_type,projection_confirmed,
-         weight_bearing_confirmed,orientation_confirmed,metadata_inverted,horizontal_flip,created_by,preflight_id)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
-        [episodeId, asset.rows[0].id, examDate, sourceType, confirmation.projection, confirmation.weight,
-          confirmation.orientation, preflight.file_kind === 'DICOM' ? asBool(body.invertPolarity ?? 'false', 'polaridad') : false,
-          body.imageLayout === 'bilateral' ? asBool(body.swapSides ?? 'false', 'intercambio de lados') : false, user.id, preflight.id],
-      );
-      const observation = await client.query<{ id: string }>(
-        'INSERT INTO knee_observations(study_id,knee_side) VALUES($1,$2) RETURNING id', [study.rows[0].id, body.kneeSide],
-      );
-      await client.query(
-        `INSERT INTO clinical_observations(knee_observation_id,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,recorded_by)
-         VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
-        [observation.rows[0].id, profile.pain_score, profile.obesity, profile.diabetes, profile.hypertension,
-          profile.nicotine_use, profile.trauma_lower_extremity, user.id],
-      );
-      const job = await client.query<{ id: string }>(
-        `INSERT INTO inference_jobs(observation_id,job_type,idempotency_key,created_by)
-         VALUES($1,'KL',$2,$3) RETURNING id`, [observation.rows[0].id, `kl:${observation.rows[0].id}:automatic`, user.id],
-      );
-      return { studyId: study.rows[0].id, observationId: observation.rows[0].id, jobId: job.rows[0].id };
+      const groupId = sides.length === 2 ? randomUUID() : null;
+      if (groupId) {
+        await client.query('UPDATE clinical_episodes SET bilateral_group_id=$2 WHERE id=$1', [episodeId, groupId]);
+      }
+      const analyses = [];
+      for (const [index, kneeSide] of sides.entries()) {
+        const targetEpisodeId = index === 0 ? episodeId : (await client.query<{ id: string }>(
+          `INSERT INTO clinical_episodes(patient_id,opened_at,created_by,bilateral_group_id)
+           VALUES($1,$2,$3,$4) RETURNING id`, [episode.patient_id, examDate, user.id, groupId],
+        )).rows[0].id;
+        const study = await client.query<{ id: string }>(
+          `INSERT INTO radiographic_studies(episode_id,asset_id,exam_date,source_type,projection_confirmed,
+           weight_bearing_confirmed,orientation_confirmed,metadata_inverted,horizontal_flip,created_by,preflight_id)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING id`,
+          [targetEpisodeId, asset.rows[0].id, examDate, sourceType, confirmation.projection, confirmation.weight,
+            confirmation.orientation, preflight.file_kind === 'DICOM' ? asBool(body.invertPolarity ?? 'false', 'polaridad') : false,
+            body.imageLayout === 'bilateral' ? asBool(body.swapSides ?? 'false', 'intercambio de lados') : false, user.id, preflight.id],
+        );
+        const observation = await client.query<{ id: string }>(
+          'INSERT INTO knee_observations(study_id,knee_side) VALUES($1,$2) RETURNING id', [study.rows[0].id, kneeSide],
+        );
+        await client.query(
+          `INSERT INTO clinical_observations(knee_observation_id,pain_score,obesity,diabetes,hypertension,nicotine_use,trauma_lower_extremity,recorded_by)
+           VALUES($1,$2,$3,$4,$5,$6,$7,$8)`,
+          [observation.rows[0].id, profile.pain_score, profile.obesity, profile.diabetes, profile.hypertension,
+            profile.nicotine_use, profile.trauma_lower_extremity, user.id],
+        );
+        const job = await client.query<{ id: string }>(
+          `INSERT INTO inference_jobs(observation_id,job_type,idempotency_key,created_by)
+           VALUES($1,'KL',$2,$3) RETURNING id`, [observation.rows[0].id, `kl:${observation.rows[0].id}:automatic`, user.id],
+        );
+        analyses.push({ episodeId: targetEpisodeId, studyId: study.rows[0].id,
+          observationId: observation.rows[0].id, jobId: job.rows[0].id, kneeSide });
+      }
+      return { ...analyses[0], bilateralGroupId: groupId, analyses };
     });
-    await this.audit.record(user.id, 'STUDY_UPLOADED', 'RadiographicStudy', ids.studyId, {
-      sourceType, kneeSide: body.kneeSide, preflightStatus: preflight.review_status,
-    });
-    await this.audit.record(user.id, 'INFERENCE_QUEUED', 'InferenceJob', ids.jobId, { automatic: true });
+    for (const analysis of ids.analyses) {
+      if (analysis.episodeId !== episodeId) {
+        await this.audit.record(user.id, 'EPISODE_CREATED', 'ClinicalEpisode', analysis.episodeId, {
+          automatic: true, bilateralGroupId: ids.bilateralGroupId,
+        });
+      }
+      await this.audit.record(user.id, 'STUDY_UPLOADED', 'RadiographicStudy', analysis.studyId, {
+        sourceType, kneeSide: analysis.kneeSide, preflightStatus: preflight.review_status,
+        bilateralGroupId: ids.bilateralGroupId, episodeId: analysis.episodeId,
+      });
+      await this.audit.record(user.id, 'INFERENCE_QUEUED', 'InferenceJob', analysis.jobId, { automatic: true, kneeSide: analysis.kneeSide });
+    }
     return ids;
   }
 

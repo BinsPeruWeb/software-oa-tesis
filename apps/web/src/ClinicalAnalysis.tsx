@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 import {
   ArrowLeft,
   BrainCircuit,
@@ -10,6 +10,7 @@ import {
 import { api, post } from "./api";
 import { Notify, Patient } from "./types";
 import { Badge } from "./ui";
+import { KneeTabs } from "./KneeTabs";
 
 type Prediction = {
   predictedKl: number;
@@ -40,7 +41,7 @@ type AnalysisIds = {
   studyId: string;
   observationId: string;
   jobId: string;
-  kneeSide: string;
+  kneeSide: "L" | "R";
 };
 const percent = (value: number) => `${(value * 100).toFixed(1)}%`;
 
@@ -50,11 +51,11 @@ function StudyUpload({
   notify,
 }: {
   patient: Patient;
-  onReady: (ids: AnalysisIds) => void;
+  onReady: (ids: AnalysisIds[]) => void;
   notify: Notify;
 }) {
   const [file, setFile] = useState<File>();
-  const [side, setSide] = useState("R");
+  const [side, setSide] = useState<"R" | "L" | "BOTH">("R");
   const [layout, setLayout] = useState<"bilateral" | "single" | "">("");
   const [examDate, setExamDate] = useState(
     new Date().toISOString().slice(0, 10),
@@ -63,14 +64,18 @@ function StudyUpload({
   const [preflight, setPreflight] = useState<Preflight>();
   const [checking, setChecking] = useState(false);
   const [busy, setBusy] = useState(false);
+  const fileChoice = useRef(0);
   const blocked =
     preflight?.reviewStatus === "REJECTED" || preflight?.supported === false;
 
   async function chooseFile(selected?: File) {
+    const choice = ++fileChoice.current;
     setFile(selected);
     setPreflight(undefined);
     setLayout("");
-    if (!selected) return;
+    setSide("R");
+    setAdvanced({ invert: false, swap: false });
+    if (!selected) { setChecking(false); return; }
     setChecking(true);
     try {
       const data = new FormData();
@@ -79,6 +84,7 @@ function StudyUpload({
         method: "POST",
         body: data,
       });
+      if (fileChoice.current !== choice) return;
       setPreflight(result);
       if (result.fileKind === "DICOM") setLayout("bilateral");
       else if (result.suggestedLayout !== "uncertain")
@@ -98,15 +104,15 @@ function StudyUpload({
             : "warning",
       );
     } catch (error: any) {
-      notify(error.message, "error");
+      if (fileChoice.current === choice) notify(error.message, "error");
     } finally {
-      setChecking(false);
+      if (fileChoice.current === choice) setChecking(false);
     }
   }
 
   async function submit(event: FormEvent) {
     event.preventDefault();
-    if (!file || !preflight || !layout) return;
+    if (busy || checking || blocked || !file || !preflight || !layout) return;
     setBusy(true);
     try {
       const episode = await post<{ id: string }>(
@@ -125,18 +131,19 @@ function StudyUpload({
         studyId: string;
         observationId: string;
         jobId: string;
+        analyses?: AnalysisIds[];
       }>(`/api/episodes/${episode.id}/studies`, { method: "POST", body: data });
       notify(
-        "Estudio guardado. El análisis comenzó automáticamente.",
+        side === "BOTH" ? "Dos episodios guardados. Ambas rodillas se analizarán automáticamente." : "Estudio guardado. El análisis comenzó automáticamente.",
         "success",
       );
-      onReady({
+      onReady(study.analyses ?? [{
         episodeId: episode.id,
         studyId: study.studyId,
         observationId: study.observationId,
         jobId: study.jobId,
-        kneeSide: side,
-      });
+        kneeSide: side as "L" | "R",
+      }]);
     } catch (error: any) {
       notify(error.message, "error");
     } finally {
@@ -248,7 +255,7 @@ function StudyUpload({
                   type="button"
                   disabled={preflight.fileKind === "DICOM"}
                   className={layout === "single" ? "active" : ""}
-                  onClick={() => setLayout("single")}
+                  onClick={() => { setLayout("single"); if (side === "BOTH") setSide("R"); }}
                 >
                   Una rodilla
                 </button>
@@ -271,7 +278,13 @@ function StudyUpload({
                 >
                   Izquierda
                 </button>
+                {layout === "bilateral" && (
+                  <button type="button" className={side === "BOTH" ? "active" : ""} onClick={() => setSide("BOTH")}>
+                    Ambas
+                  </button>
+                )}
               </div>
+              {side === "BOTH" && <small>Se registrará un episodio independiente por rodilla, con sus propios resultados, interpretación y notas.</small>}
             </fieldset>
             <div className="study-contract span">
               <b>Uso previsto</b>
@@ -494,7 +507,7 @@ function AutomaticWorkflow({
           <div>
             <span className={`status-orb ${prediction ? "done" : ""}`} />
             <div>
-              <p className="overline">Procesamiento automático</p>
+              <p className="overline">Procesamiento automático · Rodilla {ids.kneeSide === "L" ? "izquierda" : "derecha"}</p>
               <h2>{stage}</h2>
             </div>
           </div>
@@ -648,7 +661,8 @@ export default function ClinicalAnalysis({
   onDone: () => void;
   openAnalysis: (episodeId: string) => void;
 }) {
-  const [ids, setIds] = useState<AnalysisIds>();
+  const [ids, setIds] = useState<AnalysisIds[]>();
+  const [selected, setSelected] = useState("R");
   return (
     <div className="analysis-page">
       <div className="page-head">
@@ -663,13 +677,17 @@ export default function ClinicalAnalysis({
         </div>
       </div>
       {!ids ? (
-        <StudyUpload patient={patient} notify={notify} onReady={setIds} />
+        <StudyUpload patient={patient} notify={notify} onReady={(values) => { setIds(values); setSelected(values[0].kneeSide); }} />
       ) : (
-        <AutomaticWorkflow
-          ids={ids}
-          notify={notify}
-          openAnalysis={openAnalysis}
-        />
+        <>
+          {ids.length > 1 && <KneeTabs value={selected} onChange={setSelected} options={ids.map((item) => ({ value: item.kneeSide, label: `Rodilla ${item.kneeSide === "R" ? "derecha" : "izquierda"}`, panelId: `workflow-${item.observationId}` }))} />}
+          {ids.map((item) => (
+            <div key={item.observationId} id={`workflow-${item.observationId}`} role={ids.length > 1 ? "tabpanel" : undefined}
+              aria-label={`Análisis de rodilla ${item.kneeSide === "R" ? "derecha" : "izquierda"}`} hidden={selected !== item.kneeSide}>
+              <AutomaticWorkflow ids={item} notify={notify} openAnalysis={openAnalysis} />
+            </div>
+          ))}
+        </>
       )}
     </div>
   );

@@ -41,6 +41,10 @@ RAZONAMIENTO CLÍNICO QUE DEBES APLICAR:
 - En scope STUDY interpreta solo ese estudio. No declares progresión si no existe comparación longitudinal.
 - En scope PATIENT compara cronológicamente el primer, los intermedios relevantes y el último estudio. Cuantifica el
   cambio KL y el tiempo en meses. Si hay estudios con igual intervalo temporal, no los presentes como progresión.
+- Si aparecen ambas rodillas, agrupa primero por lateralidad. Compara derecha con derecha e izquierda con izquierda;
+  nunca interpretes la diferencia entre los lados como progresión temporal. Distingue claramente la severidad, el dolor
+  y los riesgos de cada rodilla, y después integra las prioridades de seguimiento del paciente. Una misma fecha puede
+  contener una evaluación por lado y no representa dos momentos de seguimiento.
 - Diferencia severidad radiográfica, síntomas y modelos pronósticos. Un KL bajo con dolor alto o un KL alto con dolor
   bajo es una discordancia que merece correlación clínica explícita.
 - Menciona comorbilidades solo cuando cambien la orientación. No recites listas de factores positivos y negativos.

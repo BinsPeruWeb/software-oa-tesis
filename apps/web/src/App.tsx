@@ -35,6 +35,8 @@ import {
 import { Toaster, toast } from "sonner";
 import { api, post } from "./api";
 import ClinicalAnalysis from "./ClinicalAnalysis";
+import { KneeTabs } from "./KneeTabs";
+import { downloadClinicalReport, ReportSide } from "./reports";
 import { Notify, Paged, Patient, User } from "./types";
 import { Badge, ConfirmModal, Empty, Modal, Pagination, Spinner } from "./ui";
 
@@ -50,6 +52,7 @@ type ClinicalProfile = {
 };
 type AnalysisSummary = {
   episodeId: string;
+  bilateralGroupId?: string | null;
   episodeDate: string;
   studyId: string;
   observationId: string;
@@ -107,7 +110,7 @@ type AdminUser = {
 const today = new Date().toISOString().slice(0, 10);
 const formatDate = (value?: string | null) =>
   value
-    ? new Intl.DateTimeFormat("es-PE", { dateStyle: "medium" }).format(
+    ? new Intl.DateTimeFormat("es-PE", { dateStyle: "medium", timeZone: "UTC" }).format(
         new Date(value),
       )
     : "—";
@@ -1839,6 +1842,8 @@ function PatientDetail({
   const [profileOpen, setProfileOpen] = useState(false);
   const [priorOpen, setPriorOpen] = useState(false);
   const [archiving, setArchiving] = useState(false);
+  const [reportBusy, setReportBusy] = useState(false);
+  const reportMenu = useRef<HTMLDetailsElement>(null);
   const load = async () => {
     try {
       const p = await api<Patient>(`/api/patients/${id}`);
@@ -1897,6 +1902,18 @@ function PatientDetail({
     } catch (error: any) {
       notify(error.message, "error");
     }
+  }
+  async function generateLongitudinal(kneeSide: ReportSide) {
+    if (reportBusy) return;
+    if (reportMenu.current) reportMenu.current.open = false;
+    const anchor = analyses.find((analysis) => kneeSide === "ALL" || analysis.kneeSide === kneeSide);
+    if (!anchor) return;
+    setReportBusy(true);
+    try {
+      const value = await downloadClinicalReport(anchor.episodeId, "LONGITUDINAL", kneeSide);
+      notify(value.warning ? `PDF descargado. No pudo actualizarse la interpretación: ${value.warning}` : "Reporte longitudinal descargado", value.warning ? "warning" : "success");
+    } catch (error: any) { notify(error.message, "error"); }
+    finally { setReportBusy(false); }
   }
   function newAnalysis() {
     if (!completeClinicalProfile(profile)) {
@@ -2052,6 +2069,27 @@ function PatientDetail({
               activan automáticamente la LSTM.
             </p>
           </div>
+          {analyses.length > 0 && !patient.archived && (
+            new Set(analyses.map((analysis) => analysis.kneeSide)).size > 1 ? (
+              <details className="report-menu" ref={reportMenu}>
+                <summary className="button secondary" aria-disabled={reportBusy}
+                  onClick={(event) => { if (reportBusy) event.preventDefault(); }}>
+                  <Download size={17} /> {reportBusy ? "Generando reporte…" : "Generar Reporte"}
+                </summary>
+                <div className="report-menu-options">
+                  {(["ALL", "R", "L"] as const).map((side) => (
+                    <button key={side} type="button" disabled={reportBusy} onClick={() => void generateLongitudinal(side)}>
+                      {side === "ALL" ? "General" : side === "R" ? "Rodilla Derecha" : "Rodilla Izquierda"}
+                    </button>
+                  ))}
+                </div>
+              </details>
+            ) : (
+              <button className="button secondary" disabled={reportBusy} onClick={() => void generateLongitudinal(analyses[0].kneeSide)}>
+                <Download size={17} /> {reportBusy ? "Generando reporte…" : "Generar Reporte"}
+              </button>
+            )
+          )}
         </div>
         {analyses.length === 0 ? (
           <Empty
@@ -2059,16 +2097,17 @@ function PatientDetail({
             detail="Cargue la primera radiografía para iniciar la línea de tiempo."
           />
         ) : (
-          <AnalysisCarousel
-            analyses={analyses}
-            open={(analysis) =>
-              navigate({
-                name: "episode-analysis",
-                patientId: id,
-                episodeId: analysis.episodeId,
-              })
-            }
-          />
+          <div className="knee-timeline-groups">
+            {(["R", "L"] as const).map((side) => {
+              const grouped = analyses.filter((analysis) => analysis.kneeSide === side);
+              return grouped.length ? (
+                <section className="knee-timeline-group" key={side} aria-label={`Seguimiento de rodilla ${side === "R" ? "derecha" : "izquierda"}`}>
+                  <h3>Rodilla {side === "R" ? "Derecha" : "Izquierda"}</h3>
+                  <AnalysisCarousel analyses={grouped} open={(analysis) => navigate({ name: "episode-analysis", patientId: id, episodeId: analysis.episodeId })} />
+                </section>
+              ) : null;
+            })}
+          </div>
         )}
         {episodes.some(
           (episode) =>
@@ -2168,6 +2207,7 @@ function EpisodeAnalysis({
   notify: Notify;
 }) {
   const [data, setData] = useState<any>();
+  const [selectedEpisodeId, setSelectedEpisodeId] = useState(episodeId);
   const [busy, setBusy] = useState(false);
   const [reviewing, setReviewing] = useState<any>();
   const [reviewBusy, setReviewBusy] = useState(false);
@@ -2177,7 +2217,7 @@ function EpisodeAnalysis({
     try {
       const loaded: any = await api(`/api/episodes/${episodeId}/analysis`);
       setData(loaded);
-      const current = loaded.studies?.find((study: AnalysisSummary) => study.status === "COMPLETED");
+      const current = loaded.studies?.find((study: AnalysisSummary) => study.episodeId === selectedEpisodeId && study.status === "COMPLETED");
       if (!loaded.archived && current && !recommendationRecovery.current.has(current.observationId)) {
         recommendationRecovery.current.add(current.observationId);
         try {
@@ -2197,7 +2237,7 @@ function EpisodeAnalysis({
   };
   useEffect(() => {
     void load();
-  }, [episodeId]);
+  }, [episodeId, selectedEpisodeId]);
   useEffect(() => {
     if (
       !data?.studies?.some(
@@ -2209,20 +2249,11 @@ function EpisodeAnalysis({
     return () => window.clearTimeout(timer);
   }, [data]);
   async function report(type: "EPISODE" | "LONGITUDINAL") {
+    if (busy) return;
     setBusy(true);
     try {
-      const value = await post<any>(`/api/episodes/${episodeId}/reports`, {
-        reportType: type,
-      });
-      const pdf = await api<Blob>(`/api/reports/${value.id}/download`);
-      const url = URL.createObjectURL(pdf);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `reporte-oa-${type === "LONGITUDINAL" ? "longitudinal" : "episodio"}-${String(data.episodeDate).slice(0, 10)}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      const selectedStudy = data.studies.find((study: AnalysisSummary) => study.episodeId === selectedEpisodeId);
+      const value = await downloadClinicalReport(selectedEpisodeId, type, selectedStudy?.kneeSide ?? "ALL");
       notify(
         value.warning
           ? `PDF descargado con la interpretación previamente guardada. No pudo actualizarse: ${value.warning}`
@@ -2301,6 +2332,8 @@ function EpisodeAnalysis({
     }
   }
   if (!data) return <Spinner />;
+  const currentStudies: AnalysisSummary[] = data.studies.filter((study: AnalysisSummary) => study.episodeId === selectedEpisodeId);
+  const relatedStudies: AnalysisSummary[] = data.bilateralGroupId ? data.studies : [];
   return (
     <Page
       title={`Análisis del ${formatDate(data.episodeDate)}`}
@@ -2314,6 +2347,10 @@ function EpisodeAnalysis({
         </button>
       }
     >
+      {relatedStudies.length > 1 && (
+        <KneeTabs value={selectedEpisodeId} onChange={setSelectedEpisodeId}
+          options={relatedStudies.map((study) => ({ value: study.episodeId, label: `Rodilla ${study.kneeSide === "R" ? "derecha" : "izquierda"}`, panelId: "selected-knee-analysis" }))} />
+      )}
       {data.archived ? (
         <div className="archive-banner compact"><Archive size={18} /><div><b>Consulta de archivo</b><span>Los resultados existentes permanecen disponibles en modo solo lectura.</span></div></div>
       ) : (
@@ -2326,7 +2363,9 @@ function EpisodeAnalysis({
           </button>
         </div>
       )}
-      {data.studies.map((study: AnalysisSummary) => {
+      <div id="selected-knee-analysis" role={relatedStudies.length > 1 ? "tabpanel" : undefined}
+        aria-label={`Análisis de rodilla ${currentStudies[0]?.kneeSide === "R" ? "derecha" : "izquierda"}`}>
+      {currentStudies.map((study: AnalysisSummary) => {
         const prediction = study.ensemble?.probabilities;
         return (
           <div className="episode-study" key={study.studyId}>
@@ -2440,6 +2479,7 @@ function EpisodeAnalysis({
           </div>
         );
       })}
+      </div>
       {reviewing && (
         <Modal
           title="Revisión médica de KL"
@@ -2648,7 +2688,7 @@ function SimplePagedPage({
                           {item.confirmedKl ?? item.probabilities?.predictedKl}
                         </Badge>
                       ) : kind === "reports" ? (
-                        <Badge tone="neutral">{item.reportType === "LONGITUDINAL" ? "Longitudinal" : "Episodio"}</Badge>
+                        <Badge tone="neutral">{item.reportType === "LONGITUDINAL" ? "Longitudinal" : "Episodio"} · {item.kneeSide === "L" ? "Izquierda" : item.kneeSide === "R" ? "Derecha" : "General"}</Badge>
                       ) : (
                         <Badge tone="info">{item.status}</Badge>
                       )}
@@ -2809,6 +2849,7 @@ function Shell({
     if (route.name === "episode-analysis" && route.patientId && route.episodeId)
       return (
         <EpisodeAnalysis
+          key={route.episodeId}
           patientId={route.patientId}
           episodeId={route.episodeId}
           navigate={go}

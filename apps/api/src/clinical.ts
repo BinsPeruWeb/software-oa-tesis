@@ -41,6 +41,7 @@ type RecommendationAttempt = {
 @UseGuards(SessionGuard, CsrfGuard, ClinicianGuard)
 export class ClinicalController {
   private readonly logger = new Logger(ClinicalController.name);
+  private readonly recommendationQueue = new Map<string, Promise<unknown>>();
   constructor(
     private readonly db: DatabaseService, private readonly crypto: CryptoService,
     private readonly assets: AssetService, private readonly audit: AuditService,
@@ -469,7 +470,7 @@ export class ClinicalController {
       ...study,
     }));
     const payload = { scope, studies: semanticStudies };
-    const inputHash = createHash('sha256').update(JSON.stringify({ contractVersion: 'recommendation-v4', payload })).digest('hex');
+    const inputHash = createHash('sha256').update(JSON.stringify({ contractVersion: 'recommendation-v5-bilateral', payload })).digest('hex');
     const existing = await this.storedRecommendation(patientId, scope, observationId);
     if (existing?.inputHash === inputHash) return { value: existing, updated: false, error: null, errorCode: null };
     let result: any;
@@ -515,17 +516,34 @@ export class ClinicalController {
     };
   }
 
+  private async withRecommendationLock<T>(patientId: string, action: () => Promise<T>): Promise<T> {
+    const previous = this.recommendationQueue.get(patientId) ?? Promise.resolve();
+    const operation = previous.catch(() => undefined).then(action);
+    this.recommendationQueue.set(patientId, operation);
+    try { return await operation; }
+    finally {
+      if (this.recommendationQueue.get(patientId) === operation) this.recommendationQueue.delete(patientId);
+    }
+  }
+
   @Post('observations/:id/recommendations')
   async recommendations(@Param('id') observationId: string, @CurrentUser() user: AuthUser) {
     observationId = uuid(observationId, 'Observación');
     const current = await this.currentContext(observationId, user.id);
-    const studies = await this.recommendationStudies(current.patient_id, user.id);
+    // The last completed knee must not be overwritten by an older concurrent
+    // patient synthesis. Read the latest results inside the patient queue.
+    return this.withRecommendationLock(current.patient_id, () =>
+      this.recommendationsForObservation(observationId, current.patient_id, user));
+  }
+
+  private async recommendationsForObservation(observationId: string, patientId: string, user: AuthUser) {
+    const studies = await this.recommendationStudies(patientId, user.id);
     const currentStudy = studies.find((study) => study.observationId === observationId);
     if (!currentStudy) throw new BadRequestException('El análisis no está disponible para generar orientación');
     const [individualResult, generalResult] = await Promise.all([
-      this.generateRecommendation(current.patient_id, 'STUDY', [currentStudy], user, observationId),
+      this.generateRecommendation(patientId, 'STUDY', [currentStudy], user, observationId),
       studies.length >= 2
-        ? this.generateRecommendation(current.patient_id, 'PATIENT', studies, user)
+        ? this.generateRecommendation(patientId, 'PATIENT', studies, user)
         : Promise.resolve<RecommendationAttempt>({ value: null, updated: false, error: null, errorCode: null }),
     ]);
     const errors = [
@@ -700,7 +718,7 @@ export class ClinicalController {
   async analyses(@Param('patientId') patientId: string, @CurrentUser() user: AuthUser) {
     patientId = uuid(patientId, 'Paciente'); await this.ensurePatient(patientId, user.id, true);
     const rows = (await this.db.query<any>(
-      `SELECT e.id "episodeId",e.opened_at "episodeDate",s.id "studyId",s.exam_date "examDate",s.source_type "sourceType",
+      `SELECT e.id "episodeId",e.opened_at "episodeDate",e.bilateral_group_id "bilateralGroupId",s.id "studyId",s.exam_date "examDate",s.source_type "sourceType",
        k.id "observationId",k.knee_side "kneeSide",e.patient_id "patientId" FROM clinical_episodes e JOIN radiographic_studies s ON s.episode_id=e.id
        JOIN knee_observations k ON k.study_id=s.id WHERE e.patient_id=$1 ORDER BY s.exam_date DESC,k.knee_side,k.id`, [patientId],
     )).rows;
@@ -711,15 +729,17 @@ export class ClinicalController {
   async episodeAnalysis(@Param('episodeId') episodeId: string, @CurrentUser() user: AuthUser) {
     episodeId = uuid(episodeId, 'Episodio');
     const episode = (await this.db.query<any>(
-      `SELECT e.id "episodeId",e.opened_at "episodeDate",e.status,p.id "patientId",(p.archived_at IS NOT NULL) archived
+      `SELECT e.id "episodeId",e.opened_at "episodeDate",e.bilateral_group_id "bilateralGroupId",e.status,p.id "patientId",(p.archived_at IS NOT NULL) archived
        FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
        WHERE e.id=$1 AND p.owner_clinician_id=$2`, [episodeId, user.id],
     )).rows[0];
     if (!episode) throw new BadRequestException('Episodio no encontrado');
     const studies = (await this.db.query<any>(
-      `SELECT e.id "episodeId",e.opened_at "episodeDate",s.id "studyId",s.exam_date "examDate",s.source_type "sourceType",
+      `SELECT e.id "episodeId",e.opened_at "episodeDate",e.bilateral_group_id "bilateralGroupId",s.id "studyId",s.exam_date "examDate",s.source_type "sourceType",
        k.id "observationId",k.knee_side "kneeSide",e.patient_id "patientId" FROM clinical_episodes e JOIN radiographic_studies s ON s.episode_id=e.id
-       JOIN knee_observations k ON k.study_id=s.id WHERE e.id=$1 ORDER BY s.exam_date,k.knee_side,k.id`, [episodeId],
+       JOIN knee_observations k ON k.study_id=s.id
+       WHERE e.patient_id=$2 AND (e.id=$1 OR ($3::uuid IS NOT NULL AND e.bilateral_group_id=$3))
+       ORDER BY s.exam_date,k.knee_side DESC,k.id`, [episodeId, episode.patientId, episode.bilateralGroupId],
     )).rows;
     const reports = (await this.db.query(
       `SELECT id,report_type "reportType",generated_at "generatedAt" FROM draft_reports WHERE episode_id=$1 ORDER BY generated_at DESC`, [episodeId],
@@ -742,9 +762,13 @@ export class ClinicalController {
   }
 
   @Post('episodes/:episodeId/reports')
-  async report(@Param('episodeId') episodeId: string, @Body() body: { reportType?: string }, @CurrentUser() user: AuthUser) {
+  async report(@Param('episodeId') episodeId: string, @Body() body: { reportType?: string; kneeSide?: string }, @CurrentUser() user: AuthUser) {
     episodeId = uuid(episodeId, 'Episodio');
     const reportType = body.reportType === 'LONGITUDINAL' ? 'LONGITUDINAL' : 'EPISODE';
+    if (body.kneeSide !== undefined && !['L', 'R', 'ALL'].includes(body.kneeSide)) {
+      throw new BadRequestException('Seleccione derecha, izquierda o general para el reporte');
+    }
+    const kneeSide = body.kneeSide && body.kneeSide !== 'ALL' ? body.kneeSide : null;
     const patient = (await this.db.query<any>(
       `SELECT e.patient_id,e.opened_at,p.names_cipher,p.surnames_cipher,p.medical_record_cipher,p.dni_cipher,
        p.birth_date_cipher,p.sex_cipher FROM clinical_episodes e JOIN patients p ON p.id=e.patient_id
@@ -755,7 +779,8 @@ export class ClinicalController {
       `SELECT s.id,s.exam_date,s.source_type,a.storage_key,a.content_type,k.id observation_id,k.knee_side,e.id episode_id
        FROM radiographic_studies s JOIN stored_assets a ON a.id=s.asset_id JOIN knee_observations k ON k.study_id=s.id
        JOIN clinical_episodes e ON e.id=s.episode_id WHERE e.patient_id=$1 AND ($2='LONGITUDINAL' OR e.id=$3)
-       ORDER BY s.exam_date,k.knee_side`, [patient.patient_id, reportType, episodeId],
+       AND ($4::text IS NULL OR k.knee_side=$4)
+       ORDER BY s.exam_date,k.knee_side DESC,s.id`, [patient.patient_id, reportType, episodeId, kneeSide],
     )).rows;
     if (!studies.length) throw new BadRequestException('No hay estudios para generar el reporte');
     for (const study of studies) {
@@ -773,22 +798,23 @@ export class ClinicalController {
       )).rows.map(async (item) => ({ ...item, image: await this.assets.read(item.storage_key) }))) : [];
       study.note = await this.storedClinicalNote(patient.patient_id, 'STUDY', study.observation_id);
     }
-    const history = (await this.db.query<any>('SELECT * FROM prior_exams WHERE patient_id=$1 ORDER BY exam_date', [patient.patient_id])).rows;
+    const history = (await this.db.query<any>(
+      'SELECT * FROM prior_exams WHERE patient_id=$1 AND ($2::text IS NULL OR knee_side=$2) ORDER BY exam_date',
+      [patient.patient_id, kneeSide],
+    )).rows;
     const organization = (await this.db.query<{ value: any }>("SELECT value FROM app_settings WHERE key='organization'")).rows[0]?.value ?? {};
-    const recommendationInput = await this.recommendationStudies(patient.patient_id, user.id);
-    const episodeRecommendationInput = recommendationInput.find(
-      (item) => item.observationId === studies[0].observation_id,
-    );
-    const recommendationAttempt: RecommendationAttempt = reportType === 'LONGITUDINAL' && recommendationInput.length >= 2
-      ? await this.generateRecommendation(patient.patient_id, 'PATIENT', recommendationInput, user)
-      : episodeRecommendationInput
-        ? await this.generateRecommendation(
-          patient.patient_id, 'STUDY', [episodeRecommendationInput], user, episodeRecommendationInput.observationId,
-        )
-        : {
-          value: null, updated: false, errorCode: 'RECOMMENDATION_INPUT_UNAVAILABLE',
-          error: 'El análisis no tiene resultados suficientes para generar la interpretación clínica.',
-        };
+    const recommendationAttempt = await this.withRecommendationLock(patient.patient_id, async (): Promise<RecommendationAttempt> => {
+      const recommendationInput = await this.recommendationStudies(patient.patient_id, user.id);
+      const episodeRecommendationInput = recommendationInput.find((item) => item.observationId === studies[0].observation_id);
+      if (reportType === 'LONGITUDINAL' && recommendationInput.length >= 2) {
+        return this.generateRecommendation(patient.patient_id, 'PATIENT', recommendationInput, user);
+      }
+      if (episodeRecommendationInput) {
+        return this.generateRecommendation(patient.patient_id, 'STUDY', [episodeRecommendationInput], user, episodeRecommendationInput.observationId);
+      }
+      return { value: null, updated: false, errorCode: 'RECOMMENDATION_INPUT_UNAVAILABLE',
+        error: 'El análisis no tiene resultados suficientes para generar la interpretación clínica.' };
+    });
     if (!recommendationAttempt.value) {
       throw new BadRequestException(recommendationAttempt.error ?? 'No fue posible generar la interpretación clínica.');
     }
@@ -796,7 +822,7 @@ export class ClinicalController {
       ? await this.storedClinicalNote(patient.patient_id, 'PATIENT')
       : studies[0].note;
     const context = {
-      organization, reportType, episodeId, patientId: patient.patient_id, openedAt: patient.opened_at,
+      organization, reportType, kneeSide, episodeId, patientId: patient.patient_id, openedAt: patient.opened_at,
       patientName: `${this.crypto.decryptText(patient.names_cipher, `patient:${patient.patient_id}:names`)} ${this.crypto.decryptText(patient.surnames_cipher, `patient:${patient.patient_id}:surnames`)}`,
       mrn: this.crypto.decryptText(patient.medical_record_cipher, `patient:${patient.patient_id}:mrn`),
       dni: this.crypto.decryptText(patient.dni_cipher, `patient:${patient.patient_id}:dni`),
@@ -812,10 +838,10 @@ export class ClinicalController {
       [patient.patient_id, stored.storageKey, createHash('sha256').update(pdf).digest('hex'), pdf.length, user.id],
     );
     const report = await this.db.query<{ id: string }>(
-      `INSERT INTO draft_reports(episode_id,asset_id,generated_by,report_type) VALUES($1,$2,$3,$4) RETURNING id`,
-      [episodeId, asset.rows[0].id, user.id, reportType],
+      `INSERT INTO draft_reports(episode_id,asset_id,generated_by,report_type,knee_side) VALUES($1,$2,$3,$4,$5) RETURNING id`,
+      [episodeId, asset.rows[0].id, user.id, reportType, kneeSide],
     );
-    await this.audit.record(user.id, 'DRAFT_REPORT_GENERATED', 'DraftReport', report.rows[0].id, { reportType });
+    await this.audit.record(user.id, 'DRAFT_REPORT_GENERATED', 'DraftReport', report.rows[0].id, { reportType, kneeSide });
     return {
       id: report.rows[0].id, status: 'DRAFT', reportType,
       warning: recommendationAttempt.error,
@@ -889,7 +915,7 @@ export class ClinicalController {
           .text(reportTitle, contentX, 43, { width: 350 });
         document.font('Helvetica').fontSize(8.3).fillColor('#c7d9d4')
           .text(context.reportType === 'LONGITUDINAL'
-            ? 'Comparación cronológica de estudios radiográficos'
+            ? `Comparación cronológica · ${context.kneeSide ? `rodilla ${sideLabel(context.kneeSide).toLowerCase()}` : 'seguimiento general'}`
             : 'Resultados radiográficos del episodio clínico', contentX, 70, { width: 360 });
         document.roundedRect(432, 24, 125, 27, 7).fill('#e9bd68');
         document.fillColor('#17312d').font('Helvetica-Bold').fontSize(8)
@@ -1015,7 +1041,7 @@ export class ClinicalController {
         .text(isGeneral ? 'Interpretación longitudinal' : 'Interpretación del análisis', contentX, 43, { width: 370 });
       document.fillColor('#c7d9d4').font('Helvetica').fontSize(8.3)
         .text(
-          isGeneral ? 'Síntesis integral de la evolución radiográfica' : 'Síntesis clínica del estudio radiográfico',
+          isGeneral ? 'Interpretación general del paciente · integra todos sus análisis' : 'Síntesis clínica del estudio radiográfico',
           contentX, 70, { width: 370 },
         );
       document.roundedRect(432, 24, 125, 27, 7).fill('#e9bd68');
@@ -1032,7 +1058,7 @@ export class ClinicalController {
       };
       field(
         'Tipo de interpretación',
-        `${isGeneral ? 'Longitudinal' : 'Por episodio'} · ${isGeneral ? context.studies.length : 1} estudio(s)`,
+        `${isGeneral ? 'General del paciente' : 'Por episodio'} · ${context.studies.length} estudio(s) en este reporte`,
         50, 151, 250,
       );
       field('Prioridad orientativa', priorityLabels[recommendation.priority] ?? 'Seguimiento habitual', 312, 151, 110);
@@ -1102,7 +1128,7 @@ export class ClinicalController {
   async reports(@Param('patientId') patientId: string, @CurrentUser() user: AuthUser) {
     patientId = uuid(patientId, 'Paciente');
     return (await this.db.query(
-      `SELECT r.id,r.report_type "reportType",r.status,r.generated_at "generatedAt",e.opened_at "episodeDate"
+      `SELECT r.id,r.report_type "reportType",r.knee_side "kneeSide",r.status,r.generated_at "generatedAt",e.opened_at "episodeDate"
        FROM draft_reports r JOIN clinical_episodes e ON e.id=r.episode_id JOIN patients p ON p.id=e.patient_id
        WHERE p.id=$1 AND p.owner_clinician_id=$2 ORDER BY r.generated_at DESC LIMIT 10`, [patientId, user.id],
     )).rows;
@@ -1125,11 +1151,11 @@ export class ClinicalController {
     const reportType = reportTypeValue && reportTypeValue !== 'ALL' ? optionalText(reportTypeValue, 'Tipo de reporte', 20) : null;
     if (reportType && !['EPISODE', 'LONGITUDINAL'].includes(reportType)) throw new BadRequestException('Tipo de reporte inválido');
     const rows = (await this.db.query<any>(
-      `SELECT r.id,r.report_type "reportType",r.status,r.generated_at "generatedAt",e.opened_at "episodeDate",e.id "episodeId",p.id "patientId",
+      `SELECT r.id,r.report_type "reportType",r.knee_side "kneeSide",r.status,r.generated_at "generatedAt",e.opened_at "episodeDate",e.id "episodeId",p.id "patientId",
        p.names_cipher,p.surnames_cipher,p.medical_record_cipher FROM draft_reports r JOIN clinical_episodes e ON e.id=r.episode_id
        JOIN patients p ON p.id=e.patient_id WHERE p.owner_clinician_id=$1 ORDER BY e.opened_at DESC,r.generated_at DESC`, [user.id],
     )).rows.map((row) => ({ id: row.id, reportType: row.reportType, status: row.status, generatedAt: row.generatedAt,
-      episodeDate: row.episodeDate, episodeId: row.episodeId, patientId: row.patientId,
+      episodeDate: row.episodeDate, episodeId: row.episodeId, patientId: row.patientId, kneeSide: row.kneeSide,
       patientName: `${this.crypto.decryptText(row.names_cipher, `patient:${row.patientId}:names`)} ${this.crypto.decryptText(row.surnames_cipher, `patient:${row.patientId}:surnames`)}`,
       medicalRecordNumber: this.crypto.decryptText(row.medical_record_cipher, `patient:${row.patientId}:mrn`) }));
     const filtered = rows.filter((row) => {
