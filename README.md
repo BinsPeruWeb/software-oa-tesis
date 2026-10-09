@@ -36,7 +36,7 @@ Una vez publicada la imagen, se inicia con un único comando:
 ```bash
 docker run -d --name software-oa -p 3000:3000 \
   -v software-oa-data:/data --restart unless-stopped \
-  diegovj24/software-oa-presentacion:1.0.2
+  diegovj24/software-oa-presentacion:1.0.3
 ```
 
 En PowerShell puede escribirse en una sola línea. Después se abre
@@ -56,8 +56,10 @@ el `.env` y los modelos locales:
 
 ```bash
 docker build -f Dockerfile.presentation \
-  -t diegovj24/software-oa-presentacion:1.0.2 .
-docker push diegovj24/software-oa-presentacion:1.0.2
+  -t diegovj24/software-oa-presentacion:1.0.3 \
+  -t diegovj24/software-oa-presentacion:latest .
+docker push diegovj24/software-oa-presentacion:1.0.3
+docker push diegovj24/software-oa-presentacion:latest
 ```
 
 Esta variante incluye deliberadamente la configuración privada dentro de la

@@ -1,6 +1,7 @@
 .git
 .github
 .data
+.local-validation
 node_modules
 **/node_modules
 **/dist
